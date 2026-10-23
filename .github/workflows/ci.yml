@@ -35,8 +35,13 @@ jobs:
       - name: Typecheck (real peer declarations)
         run: npx tsc -p tsconfig.typecheck.json
 
-      - name: Build (tsc → lib/)
-        run: npx tsc -p tsconfig.local.json
+      - name: Build (scripts/build.mjs picks the config for this layout)
+        # Not a bare 	sc -p: a clean clone has the real peer declarations, so
+        # the build must exclude the src/peers.d.ts shim (which would shadow the
+        # genuine dsh-jobs module and break the JobKindMap augmentation). The
+        # script probes for them instead of assuming.
+        run: node scripts/build.mjs
 
       - name: Offline suite
         run: node test/run.mjs
+

@@ -68,5 +68,9 @@ link_pkg @deepseek-ai/dsh-brand @deepseek-ai/dsh-brand
 link_pkg @deepseek-ai/dsh-scope @deepseek-ai/dsh-scope
 
 echo "=== Compiling src → lib ==="
-"$ROOT/node_modules/.bin/tsc" -p tsconfig.json
+# Go through build.mjs, not `tsc -p tsconfig.json`: it probes whether the linked
+# peers actually ship declarations and picks tsconfig.local.json (with the
+# src/peers.d.ts shim) or tsconfig.build.json (shim excluded). Calling tsc on
+# the base config would use neither and fail on the missing peer types.
+node "$ROOT/scripts/build.mjs"
 echo "=== Build complete ==="

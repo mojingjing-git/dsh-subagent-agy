@@ -15,8 +15,13 @@ declare module '@deepseek-ai/dsh-subagent' {
     readonly structured?: unknown
     readonly diagnostic?: string
     readonly stopReason: string
-    /** Absolute path of the NDJSON event stream this run recorded, when one was written. */
-    readonly transcript?: string
+    // NOTE: intentionally does NOT declare `transcript`. src/index.ts augments
+    // this interface to add that field, and TypeScript errors with TS2665/TS2664
+    // ("Invalid module name in augmentation") when the shim is present but the
+    // module cannot be augmented — while declaring the field here too would make
+    // the augmentation a redundant re-declaration. Leaving it out keeps the shim
+    // a plain untyped stand-in and lets the single real augmentation in
+    // src/index.ts remain the only place `transcript` is introduced.
   }
   export type SubagentStartRequest = any
   export type ResolvedSubagentStartRequest = any

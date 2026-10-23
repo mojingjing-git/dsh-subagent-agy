@@ -1,0 +1,18 @@
+{
+  "//": "Build for a checkout where the @deepseek-ai/* peers are installed from",
+  "//2": "the registry and DO ship their declarations (CI, and any normal clone).",
+  "//3": "",
+  "//4": "differs from tsconfig.local.json in one decisive way: `src/peers.d.ts` is",
+  "//5": "excluded. Its `declare module '@deepseek-ai/dsh-jobs'` is an ambient",
+  "//6": "declaration, so with the real module resolvable the shim shadows it and",
+  "//7": "the augmentation in src/index.ts widens the shim's `JobKindMap` instead of",
+  "//8": "the genuine one — `jobs.start({ kind: 'antigravity' })` then fails to",
+  "//9": "typecheck even though the code is right. The shim exists only to stand in",
+  "//10": "for installs that ship no types; where types exist it must stay out.",
+  "//11": "",
+  "//12": "Use scripts/build.mjs, which chooses this config or tsconfig.local.json",
+  "//13": "after probing for the real declarations.",
+  "extends": "./tsconfig.json",
+  "include": ["src"],
+  "exclude": ["src/peers.d.ts"]
+}
