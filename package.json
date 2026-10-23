@@ -54,7 +54,20 @@
     "@deepseek-ai/dsh-tools": ">=0.1.0-rc.6 <0.3.0",
     "@deepseek-ai/schemastery": "^3.18.0",
     "@types/node": "^24.13.3",
-    "typescript": "^5.9.0"
+    "typescript": "^5.9.0",
+    "@deepseek-ai/cordis-plugin-include": "*",
+    "@deepseek-ai/cordis-plugin-loader": "*",
+    "@deepseek-ai/dsh-attachment": "*",
+    "@deepseek-ai/dsh-brand": "*",
+    "@deepseek-ai/dsh-chunked-list": "*",
+    "@deepseek-ai/dsh-http-proxy": "*",
+    "@deepseek-ai/dsh-sandbox": "*",
+    "@deepseek-ai/dsh-scope": "*",
+    "@deepseek-ai/dsh-timeout": "*",
+    "@deepseek-ai/dsh-typert-protocol": "*",
+    "@deepseek-ai/dsh-util-crypto": "*",
+    "@deepseek-ai/dsh-util-time": "*",
+    "@deepseek-ai/dsh-util-values": "*"
   },
   "scripts": {
     "build": "node scripts/build.mjs",
