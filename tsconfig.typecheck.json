@@ -1,17 +1,28 @@
 {
-  "//": "Typecheck against REAL peer declarations (what CI does). Requires the",
-  "//2": "@deepseek-ai/* packages installed — they are listed in devDependencies",
-  "//3": "as well as peerDependencies precisely so this gate can resolve them.",
-  "//4": "This is the check that catches a wrong field on `SubagentResult`, a",
-  "//5": "mis-targeted module augmentation, or anything else only a typed seam",
-  "//6": "can prove. `declaration` is off on purpose: emitting .d.ts here would",
-  "//7": "drag TS2742 (`Config` inferred through schemastery's pnpm path) into a",
-  "//8": "check that is supposed to be about types, not portability.",
+  "//": "Typecheck against REAL peer declarations (what CI runs). The",
+  "//2": "@deepseek-ai/* packages are devDependencies as well as",
+  "//3": "peerDependencies so a clean clone can resolve them. This is the gate",
+  "//4": "that catches a wrong field on `SubagentResult`, a mis-targeted module",
+  "//5": "augmentation, or anything else only a typed seam can prove.",
+  "//6": "",
+  "//7": "`src/peers.d.ts` is EXCLUDED on purpose. It exists only for local",
+  "//8": "builds against a DSH install that ships no .d.ts files, and its ambient",
+  "//9": "`declare module '@deepseek-ai/dsh-jobs'` would shadow the real module —",
+  "//10": "the augmentation in src/index.ts would then merge into the shim",
+  "//11": "instead of the real `JobKindMap`, and `jobs.start({ kind:",
+  "//12": "'antigravity' })` would still fail. Keeping it out here means the",
+  "//13": "augmentation is proven against the genuine interface.",
+  "//14": "",
+  "//15": "`declaration` is off because emitting .d.ts drags TS2742 (`Config`",
+  "//16": "inferred through schemastery's node_modules path) into what should be a",
+  "//17": "types-only check.",
   "extends": "./tsconfig.json",
   "compilerOptions": {
     "noEmit": true,
     "declaration": false,
     "declarationDir": null,
     "declarationMap": false
-  }
+  },
+  "include": ["src"],
+  "exclude": ["src/peers.d.ts"]
 }
