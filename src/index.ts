@@ -198,7 +198,7 @@ export const Config = z.object({
   /**
    * Ceiling for BACKGROUND runs (`--print-timeout`); the foreground ceiling
    * stays `printTimeoutMs`. Long tasks belong in the background, where the
-   * model watches progress via job_output and is notified on completion, so
+   * DSH wakes the owning agent when the job settles (no polling needed), so
    * this ceiling can be generous; the watchdog margin applies on top and
    * `job_kill` stops a run at any time.
    */
@@ -291,6 +291,13 @@ export const Config = z.object({
    * actually did. `transcriptDir` defaults to `~/.dsh/agy-transcripts`, one file
    * per task key plus an `index.json`.
    */
+  /**
+   * Where the probed agy flag support is cached. Omit it for the default
+   * (`~/.dsh/agy-flag-cache.json`); pass `''` to disable the cache. It is keyed
+   * by the executable's identity, so an agy self-update invalidates it on its
+   * own; delete the file to force a re-probe.
+   */
+  flagCachePath: z.string(),
   transcript: z.boolean().default(true),
   /** Transcript directory override; empty derives `~/.dsh/agy-transcripts`. */
   transcriptDir: z.string().default(''),
@@ -322,6 +329,7 @@ export interface Config {
   outputFormat: 'json' | 'text'
   transcript: boolean
   transcriptDir: string
+  flagCachePath: string | undefined
   extraArgs: string[]
   cwd: string
   addDirs: string[]
@@ -349,6 +357,83 @@ function pluginBaseDir(): string {
   const home = process.env.USERPROFILE ?? process.env.HOME
   if (process.env.DSH_HOME !== undefined && process.env.DSH_HOME.length > 0) return process.env.DSH_HOME
   return home !== undefined ? join(home, '.dsh') : ''
+}
+
+/**
+ * Identity of one agy build: path + size + mtime. agy updates itself, so the
+ * flag answers for 1.4.6 must not be reused for 1.4.7 — a stale "supported"
+ * is worse than a stale "unsupported", because it fails at spawn time instead
+ * of at probe time.
+ * @param exe - absolute path to the agy executable.
+ * @returns a stable cache key (falls back to the bare path when stat fails).
+ */
+function statStamp(exe: string): string {
+  try {
+    const info = statSync(exe)
+    return `${info.size}:${Math.round(info.mtimeMs)}`
+  } catch {
+    return 'unknown'
+  }
+}
+
+/**
+ * Where probed flag support is cached across restarts.
+ * @param config - the plugin configuration (`flagCachePath` overrides the default).
+ * @returns the cache file path, or '' when no location is available.
+ */
+function flagCachePath(config: Config): string {
+  // `undefined` (not configured) derives the default; `''` disables the cache,
+  // which is how tests stay out of the developer's real DSH home.
+  if (config.flagCachePath !== undefined) return config.flagCachePath
+  const base = pluginBaseDir()
+  return base.length > 0 ? join(base, 'agy-flag-cache.json') : ''
+}
+
+/**
+ * Read cached flag support for one agy build.
+ * @param identity - the `exe@size:mtime` key from `statStamp`.
+ * @returns the cached support, or undefined when absent/unreadable.
+ */
+function readFlagCache(config: Config, identity: string): AgyFlagSupport | undefined {
+  try {
+    const path = flagCachePath(config)
+    if (path.length === 0) return undefined
+    const parsed: unknown = JSON.parse(readFileSync(path, 'utf8'))
+    if (parsed === null || typeof parsed !== 'object') return undefined
+    const entry = (parsed as Record<string, unknown>)[identity]
+    if (entry === null || typeof entry !== 'object') return undefined
+    const candidate = entry as Partial<AgyFlagSupport>
+    if (typeof candidate.outputFormat !== 'boolean' || typeof candidate.probed !== 'boolean') return undefined
+    return { ...UNKNOWN_FLAG_SUPPORT, ...candidate } as AgyFlagSupport
+  } catch {
+    return undefined
+  }
+}
+
+/**
+ * Persist flag support for one agy build. Best effort: keeps the 8 most recent
+ * builds and never throws, because a cache write must not fail a run.
+ * @param identity - the `exe@size:mtime` key.
+ * @param support - the resolved flag support.
+ */
+function writeFlagCache(config: Config, identity: string, support: AgyFlagSupport): void {
+  try {
+    const path = flagCachePath(config)
+    if (path.length === 0) return
+    let table: Record<string, AgyFlagSupport> = {}
+    try {
+      const parsed: unknown = JSON.parse(readFileSync(path, 'utf8'))
+      if (parsed !== null && typeof parsed === 'object') table = parsed as Record<string, AgyFlagSupport>
+    } catch {
+      // corrupt cache: start over rather than inheriting stale flags
+    }
+    table[identity] = support
+    const keys = Object.keys(table)
+    for (const stale of keys.slice(0, Math.max(0, keys.length - 8))) delete table[stale]
+    writeFileSync(path, JSON.stringify(table, null, 2), 'utf8')
+  } catch {
+    // best effort
+  }
 }
 
 /** Resolve the proxy URL for the agy child: config → AGY_PROXY env → ~/.dsh/agy-proxy.txt. */
@@ -617,6 +702,9 @@ function tryParseJsonOutput(stdout: string): AgyJsonReply | undefined {
   return undefined
 }
 
+/** True when agy rejected the *syntax* of `--print-timeout` (it wants a unit). */
+const TIME_UNIT_ERROR_RE = /missing unit in duration|invalid duration/i
+
 /** True when agy rejected a flag it does not define (older builds). */
 function isUnknownFlagError(stderr: string): boolean {
   return /flag provided but not defined|unknown flag|not defined: -output-format/i.test(stderr)
@@ -722,6 +810,10 @@ interface AgyFlagSupport {
   addDir: boolean
   promptFile: boolean
   streamJson: boolean
+  /** `--print-timeout` wants an explicit unit (`300s`), not a bare millisecond count. */
+  durationTimeout: boolean
+  /** `--print-timeout` accepted a bare millisecond count (pre-1.4 builds). */
+  bareTimeout: boolean
   probed: boolean
 }
 
@@ -733,6 +825,10 @@ const UNKNOWN_FLAG_SUPPORT: AgyFlagSupport = {
   addDir: true,
   promptFile: false,
   streamJson: true,
+  // unknown builds: agy 1.4.x wants a unit; the old bare-number form is the
+  // riskier assumption, so prefer the unit and let the probe decide.
+  durationTimeout: true,
+  bareTimeout: false,
   probed: false,
 }
 
@@ -747,6 +843,12 @@ function parseFlagSupport(text: string): AgyFlagSupport {
     promptFile: has('prompt-file'),
     // `stream-json` is a VALUE of `--output-format` (not a flag), so match the bare word.
     streamJson: /\bstream-json\b/.test(text),
+    // The usage line documents the flag but not its accepted syntax. agy 1.4.x
+    // parses it with Go's time.ParseDuration (`time: missing unit in duration`),
+    // so an explicit unit is the safe default; the runtime fallback in
+    // probePrintTimeout() flips to `bareTimeout` if that ever regresses.
+    durationTimeout: has('print-timeout'),
+    bareTimeout: false,
     probed: has('print') || has('conversation'),
   }
 }
@@ -839,8 +941,10 @@ class AntigravitySubagentProvider implements SubagentProvider {
   private readonly runRecords = new Map<string, TaskRecord>()
   /** Per-conversation gates: follow-ups to one agy conversation run strictly one at a time. */
   private readonly followupGates = new Map<string, Promise<void>>()
-  /** Cached result of the one-time `agy help` flag probe. */
+  /** Cached result of the one-time flag probe (`agy help` + `--print-timeout` syntax). */
   private flagSupport: AgyFlagSupport | undefined
+  /** The agy build identity `flagSupport` was resolved for; a new build invalidates it. */
+  private flagProbeIdentity: string | undefined
   /** Per-provider run id sequence (module-level state would reset on HMR reloads). */
   private runSeq = 0
   /** Live in-flight runs (foreground + background), for the tasks/cancel tools. */
@@ -1015,7 +1119,6 @@ class AntigravitySubagentProvider implements SubagentProvider {
    * `help` and accepts the usage dump regardless of the exit code.
    */
   private async probeFlags(exe: string, env: Record<string, string>, cwd: string): Promise<AgyFlagSupport> {
-    if (this.flagSupport !== undefined) return this.flagSupport
     let support = UNKNOWN_FLAG_SUPPORT
     const controller = new AbortController()
     const timer = setTimeout(() => controller.abort(), PROBE_TIMEOUT_MS)
@@ -1043,9 +1146,101 @@ class AntigravitySubagentProvider implements SubagentProvider {
     } finally {
       clearTimeout(timer)
     }
-    this.flagSupport = support
     this.ctx.logger.info(`${PREFIX}: agy flag support: ${JSON.stringify(support)}`)
     return support
+  }
+
+  /**
+   * Flag support for this exact agy build.
+   *
+   * Keyed by the executable's identity (path + size + mtime), not by provider
+   * instance: agy ships updates on its own, and a cache that outlives the
+   * binary silently applies yesterday's answers to today's CLI. Everything the
+   * spawn path depends on is resolved once here — including the
+   * `--print-timeout` spelling — so a later run cannot fail on a stale guess.
+   */
+  private async resolveFlagSupport(
+    exe: string,
+    env: Record<string, string>,
+    cwd: string,
+  ): Promise<AgyFlagSupport> {
+    const identity = `${exe}@${statStamp(exe)}`
+    if (this.flagSupport !== undefined && this.flagProbeIdentity === identity) return this.flagSupport
+    const cached = readFlagCache(this.config, identity)
+    if (cached !== undefined) {
+      this.flagSupport = cached
+      this.flagProbeIdentity = identity
+      this.ctx.logger.info(`${PREFIX}: agy flag support (cached for ${identity}): ${JSON.stringify(cached)}`)
+      return cached
+    }
+    let support = await this.probeFlags(exe, env, cwd)
+    support = await this.probePrintTimeout(support, exe, env, cwd, this.ctx.logger)
+    this.flagSupport = support
+    this.flagProbeIdentity = identity
+    writeFlagCache(this.config, identity, support)
+    return support
+  }
+
+  /**
+   * Confirm how this build wants `--print-timeout` spelled.
+   *
+   * `agy help` documents the flag but not its syntax, and the accepted form
+   * changed under us: 1.4.x parses it with Go's time.ParseDuration and rejects
+   * a bare millisecond count ("time: missing unit in duration"), while earlier
+   * builds took the bare number. One ultra-short probe settles it, costs ~50 ms,
+   * and — unlike guessing — cannot turn every later run into a hard failure.
+   * Nothing is spawned when the initial guess already works.
+   */
+  private async probePrintTimeout(
+    support: AgyFlagSupport,
+    exe: string,
+    env: Record<string, string>,
+    cwd: string,
+    log: { info(message: string): void; warn(message: string): void },
+  ): Promise<AgyFlagSupport> {
+    const run = async (value: string): Promise<string | undefined> => {
+      const controller = new AbortController()
+      const timer = setTimeout(() => controller.abort(), PROBE_TIMEOUT_MS)
+      try {
+        const handle = this.ctx.subprocess.spawn({
+          argv: [exe, '--print', 'x', '--print-timeout', value],
+          cwd,
+          stdio: {
+            stdin: 'ignore',
+            stdout: { maxBytes: 8 << 10 },
+            stderr: { maxBytes: 8 << 10 },
+          },
+          graceMs: this.config.disposeGraceMs,
+          signal: controller.signal,
+          env,
+        })
+        await handle.done
+        return (handle.collected?.stderr?.readFrom(0).text ?? '') + (handle.collected?.stdout?.readFrom(0).text ?? '')
+      } catch (error) {
+        log.warn(`${PREFIX}: --print-timeout probe (${value}) failed: ${error instanceof Error ? error.message : String(error)}`)
+        return undefined
+      } finally {
+        clearTimeout(timer)
+      }
+    }
+    // A rejected duration is reported before any work starts, so agy exits fast
+    // and says "missing unit"/"invalid duration". Anything else (a login prompt,
+    // a model error) means the flag itself parsed fine.
+    const rejected = (text: string | undefined): boolean => text !== undefined && TIME_UNIT_ERROR_RE.test(text)
+    const order = support.bareTimeout ? ['bare', 'duration'] : ['duration', 'bare']
+    for (const candidate of order) {
+      const value = candidate === 'bare' ? '1' : '1ms'
+      const text = await run(value)
+      if (text === undefined) return support // probe unusable: keep the guess
+      if (!rejected(text)) {
+        if (support.durationTimeout !== (candidate === 'duration') || support.bareTimeout !== (candidate === 'bare')) {
+          log.info(`${PREFIX}: --print-timeout syntax confirmed as ${candidate}`)
+        }
+        return { ...support, durationTimeout: candidate === 'duration', bareTimeout: candidate === 'bare' }
+      }
+    }
+    log.warn(`${PREFIX}: this agy build rejected both --print-timeout spellings; relying on the local watchdog alone`)
+    return { ...support, durationTimeout: false, bareTimeout: false }
   }
 
   /**
@@ -1074,7 +1269,7 @@ class AntigravitySubagentProvider implements SubagentProvider {
     if (config.avoidBrowser) effectivePrompt += AVOID_BROWSER_SUFFIX
     if (config.avoidLargeReads) effectivePrompt += AVOID_LARGE_READ_SUFFIX
 
-    const support = await this.probeFlags(exe, env, childCwd)
+    const support = await this.resolveFlagSupport(exe, env, childCwd)
     if (conversationId !== undefined && !support.conversation) {
       throw new Error(
         `${PREFIX}: this agy build does not support --conversation — cannot resume task "${conversationId}". Upgrade agy or start a new task.`,
@@ -1118,12 +1313,17 @@ class AntigravitySubagentProvider implements SubagentProvider {
       promptArgv = ['-p', effectivePrompt]
     }
 
-    const baseArgv: string[] = [
-      exe,
-      ...promptArgv,
-      '--print-timeout',
-      `${Math.max(1, Math.round(timeoutMs / 1000))}s`,
-    ]
+    // agy parses `--print-timeout` with Go's time.ParseDuration, so a bare
+    // millisecond count like "600000" is rejected outright ("time: missing unit
+    // in duration"). Earlier builds tolerated the bare number; ago 1.4.x does
+    // not. Always hand over an explicit unit, and degrade for builds whose
+    // duration parser predates the "ms" suffix.
+    const printTimeout = support.bareTimeout ? String(Math.max(1, Math.round(timeoutMs))) : `${Math.max(1, Math.round(timeoutMs))}ms`
+    if (!support.durationTimeout && !support.bareTimeout) {
+      ctx.logger.warn(`${PREFIX}: this agy build rejected both "<n>ms" and "<n>" for --print-timeout; relying on the local watchdog only`)
+    }
+    const baseArgv: string[] = [exe, ...promptArgv]
+    if (support.durationTimeout || support.bareTimeout) baseArgv.push('--print-timeout', printTimeout)
     if (config.model.length > 0) baseArgv.push('--model', config.model)
     if (config.effort.length > 0) {
       // v5 — agy 1.4.6 accepts low | medium | high | xhigh | max. The old
@@ -1771,7 +1971,7 @@ export function apply(ctx: Context, config: Config): void {
         defineTool({
           name: config.toolName,
           description:
-            'Delegate a self-contained task to Google Antigravity CLI (agy) — a separate Gemini-powered coding agent on this machine, authenticated with your Antigravity account (no API key). It works in the parent session\'s workspace and returns its final answer; give it a complete, standalone prompt because it does not see this conversation. The result carries a `task` key: pass it to antigravity_followup to continue this conversation later. If the task targets files OUTSIDE the session workspace (e.g. another project), pass their absolute directory paths in `dirs` — without it, headless agy cannot reach them and will hang until its timeout. Every prompt gets appended environment notes telling agy NOT to use its headless browser tools (they can hang; config `avoidBrowser`, default true) and NOT to read files larger than 1 MB with its read tool (it fails above 4 MB; config `avoidLargeReads`, default true — agy should use grep/sed/run_command instead). When a task genuinely needs a browser preview, say so and have the user set avoidBrowser: false. If a run fails with "authentication required", a login window opens automatically on the machine (config autoLoginWindow, default true) — tell the user to complete the sign-in, or call ' + config.loginToolName + ' to open it manually. Foreground runs are cut off at a ' + formatMs(config.printTimeoutMs) + ' ceiling (agy --print-timeout; configurable via printTimeoutMs) and force-killed ' + formatMs(config.watchdogMarginMs) + ' later if hung. For long tasks use `background: true` and keep the user informed: poll job_output every ~60 seconds and report agy\'s live progress (see the background parameter), then the final result — never wait silently or end the turn while the job runs. List running/recent tasks with ' + config.tasksToolName + ', and stop a running one with ' + config.cancelToolName + '.',
+            'Delegate a self-contained task to Google Antigravity CLI (agy) — a separate Gemini-powered coding agent on this machine, authenticated with your Antigravity account (no API key). It works in the parent session\'s workspace and returns its final answer; give it a complete, standalone prompt because it does not see this conversation. The result carries a `task` key: pass it to antigravity_followup to continue this conversation later. If the task targets files OUTSIDE the session workspace (e.g. another project), pass their absolute directory paths in `dirs` — without it, headless agy cannot reach them and will hang until its timeout. Every prompt gets appended environment notes telling agy NOT to use its headless browser tools (they can hang; config `avoidBrowser`, default true) and NOT to read files larger than 1 MB with its read tool (it fails above 4 MB; config `avoidLargeReads`, default true — agy should use grep/sed/run_command instead). When a task genuinely needs a browser preview, say so and have the user set avoidBrowser: false. If a run fails with "authentication required", a login window opens automatically on the machine (config autoLoginWindow, default true) — tell the user to complete the sign-in, or call ' + config.loginToolName + ' to open it manually. Foreground runs are cut off at a ' + formatMs(config.printTimeoutMs) + ' ceiling (agy --print-timeout; configurable via printTimeoutMs) and force-killed ' + formatMs(config.watchdogMarginMs) + ' later if hung. For long tasks use `background: true`: you are woken in-session when the job settles, so start it, then keep working on independent steps instead of polling (see the background parameter). Poll job_output only when you are genuinely blocked on the result, and report agy\'s live progress when you do. Do not duplicate the running job\'s work or end the turn silently. List running/recent tasks with ' + config.tasksToolName + ', and stop a running one with ' + config.cancelToolName + '.',
           parameters: {
             description: {
               type: 'string',
@@ -1793,7 +1993,7 @@ export function apply(ctx: Context, config: Config): void {
             background: {
               type: 'boolean',
               description:
-                'Optional. Set true to run in the background: the call returns a job id immediately; read live output with job_output (wait: true blocks until it finishes) and stop with job_kill. The final output includes a [task: ...] line for antigravity_followup. Background runs use the generous ' + formatMs(config.backgroundTimeoutMs) + ' ceiling (backgroundTimeoutMs) instead of the ' + formatMs(config.printTimeoutMs) + ' foreground ceiling. IMPORTANT — keep the user informed during the run: after starting a long background job, do NOT wait silently. Poll job_output roughly every 60 seconds and briefly tell the user what agy is doing (streamed text and [agy: ...] step markers), then report the final result when the job completes. Do not end your turn while the job runs — the session would go silent (the completion wake-up is budgeted). For short jobs (under ~2 minutes) a single job_output with wait: true is fine. Each poll costs tokens, so keep progress updates brief.',
+                'Optional. Set true to run in the background: the call returns a job id immediately; you are notified when it settles; read live output with job_output and stop with job_kill. The final output includes a [task: ...] line for antigravity_followup. Background runs use the generous ' + formatMs(config.backgroundTimeoutMs) + ' ceiling (backgroundTimeoutMs) instead of the ' + formatMs(config.printTimeoutMs) + ' foreground ceiling. IMPORTANT — do NOT busy-poll. This job wakes you in-session (a completion notice is injected, or opens a new turn on an idle agent) as soon as it settles, so after starting it go do independent work and read the result when you are notified. Use job_output with wait: true only when you are genuinely blocked; a single wait on a short job (under ~2 minutes) is fine. Each poll costs tokens, so keep reads and progress updates brief, and do not duplicate the running job\'s work.',
             },
           },
           output: {
@@ -1814,7 +2014,7 @@ export function apply(ctx: Context, config: Config): void {
             },
             render: (_args: unknown, value: { kind?: string; jobId?: string; output?: unknown[] }) => {
               if (value.kind === 'background') {
-                return [{ type: 'text', text: `started background job ${value.jobId ?? '(unknown)'} — read live output with job_output, stop with job_kill` }]
+                return [{ type: 'text', text: `started background job ${value.jobId ?? '(unknown)'} — you will be notified when it settles; read output with job_output, stop with job_kill` }]
               }
               return [{ type: 'text', text: outputValueText(value.output ?? []) }]
             },
@@ -1896,7 +2096,7 @@ export function apply(ctx: Context, config: Config): void {
         defineTool({
           name: config.followupToolName,
           description:
-            'Continue a previous Antigravity (agy) task in the same conversation: the child agent resumes with its full prior context. Use the `task` key returned by the antigravity tool (foreground result or the [task: ...] line of a background job), or list recorded keys with ' + config.tasksToolName + ' (they survive DSH restarts). Each follow-up is one new prompt in that conversation; the response is the agent\'s final text for this turn. Same ' + formatMs(config.printTimeoutMs) + ' run ceiling as the antigravity tool; keep prompts under 30000 characters.',
+            'Continue a previous Antigravity (agy) task in the same conversation: the child agent resumes with its full prior context. Use the `task` key returned by the antigravity tool (foreground result or the [task: ...] line of a background job), or list recorded keys with ' + config.tasksToolName + ' (they survive DSH restarts). Each follow-up is one new prompt in that conversation; the response is the agent\'s final text for this turn. This call blocks until agy answers — it is a normal tool call, not a background job, so the call itself is the wait. Same ' + formatMs(config.printTimeoutMs) + ' run ceiling as the antigravity tool; keep prompts under 30000 characters.',
           parameters: {
             description: {
               type: 'string',

@@ -73,7 +73,13 @@ export async function bootPlugin(overrides = {}, options = {}) {
   // ~/.dsh/agy-conversations.json, which would leak task keys between cases
   // (and into the developer's real DSH home).
   const registryPath = overrides.registryPath ?? join(workdir, 'agy-conversations.json')
-  const config = buildConfig(mod, { ...overrides, command, registryPath })
+  // Pin the probe cache inside the case's scratch dir. The default lives in
+  // DSH_HOME, so each case's throwaway wrapper would add a permanent entry
+  // (the cache would fill with dead temp paths and evict real builds).
+  // `flagCachePath: null` disables the cache entirely, for probe-path tests.
+  const flagCachePath =
+    overrides.flagCachePath === undefined ? join(workdir, 'agy-flag-cache.json') : overrides.flagCachePath
+  const config = buildConfig(mod, { ...overrides, command, registryPath, flagCachePath })
   const tools = new Map()
   const log = []
   const disposers = []
@@ -94,10 +100,23 @@ export async function bootPlugin(overrides = {}, options = {}) {
   //   - `read`/`readAt` expose the ring at an absolute byte offset
   //   - `remove` refuses a job that has not settled
   const jobs = new Map()
+  // Every `owner` a producer registered, oldest first. `dsh-tool-jobs` only
+  // wakes an agent when `event.job.owner` is set — `start()` records `spec.owner`
+  // on the record and the `settled` event carries it. A producer that omits
+  // `owner` still runs, but its completion is silently dropped.
+  const jobOwners = []
   const jobsService = {
+    events: {
+      // Mirrors `ctx.jobs.events.subscribe({ owners: 'scope' }, fn)`: the
+      // harness never replays events, it only needs the seam to exist.
+      subscribe() {
+        return { dispose() {} }
+      },
+    },
     start(spec) {
       if (typeof spec.kind !== 'string' || spec.kind.length === 0) throw new Error('invalid job kind: expected a non-empty string')
       if (typeof spec.label !== 'string' || spec.label.length === 0) throw new Error('invalid job label: expected a non-empty string')
+      jobOwners.push(spec.owner)
       let id
       do id = `${spec.kind}-${randomUUID().replaceAll('-', '').slice(0, 16)}`
       while (jobs.has(id))
@@ -178,10 +197,15 @@ export async function bootPlugin(overrides = {}, options = {}) {
     view(id) {
       const job = jobs.get(id)
       if (job === undefined) return undefined
+      // `owner` is the owner *session id* in the projection (`job.owner?.id`),
+      // while the record keeps the live Agent. `dsh-tool-jobs` looks the id up
+      // through `ctx.get('agents').get(event.job.owner)`.
+      const ownerId = job.owner?.id
       return {
         id: job.id,
         kind: job.kind,
         label: job.label,
+        ...(ownerId !== undefined ? { owner: ownerId } : {}),
         status: job.status,
         ...(job.detail !== undefined ? { detail: job.detail } : {}),
         ...(job.progress !== undefined ? { progress: job.progress } : {}),
@@ -277,7 +301,16 @@ export async function bootPlugin(overrides = {}, options = {}) {
 
   // A stand-in for exec.agent: the plugin resolves the child cwd from
   // `request.parent.session.header.cwd`, and identifies the parent by `id`.
+  // `id` + `ctx.effect` are what `jobs-local.resolveOwner()` /
+  // `ensureOwnerCleanup()` touch on the live owner, so the stand-in carries them.
   const agent = {
+    id: options.sessionId ?? 'test-session',
+    ctx: {
+      effect(register) {
+        disposers.push({ label: 'agent effect', fn: register() })
+        return () => {}
+      },
+    },
     session: {
       id: options.sessionId ?? 'test-session',
       header: { cwd: options.sessionCwd ?? workdir },
@@ -334,6 +367,7 @@ export async function bootPlugin(overrides = {}, options = {}) {
   }
 
   /** Invoke a tool the way the tool runtime would. */
+  let lastToolAgent
   async function callTool(name, args, execOverrides = {}) {
     const tool = tools.get(name)
     if (tool === undefined) throw new Error(`tool ${name} not registered (have: ${[...tools.keys()].join(', ')})`)
@@ -342,6 +376,7 @@ export async function bootPlugin(overrides = {}, options = {}) {
       signal: execOverrides.signal ?? new AbortController().signal,
       ...execOverrides,
     }
+    lastToolAgent = exec.agent
     const value = await tool.execute(args, exec)
     // Match the real runtime: a result that violates the declared output
     // schema would be rejected before the model ever sees it.
@@ -366,11 +401,17 @@ export async function bootPlugin(overrides = {}, options = {}) {
     log,
     jobs,
     jobsService,
+    tools,
     subprocess,
     providers,
     agent,
     callTool,
     render,
+    jobOwners,
+    /** The exec.agent the most recent callTool used (what the plugin saw). */
+    get lastToolAgent() {
+      return lastToolAgent
+    },
     transcriptDir,
     registryPath,
     provider: () => providers.get(config.providerName),

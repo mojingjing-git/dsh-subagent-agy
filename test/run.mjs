@@ -35,6 +35,7 @@ async function testCase(name, options, body) {
       {
         transcriptDir,
         cwd: workdir,
+        flagCachePath: join(workdir, 'agy-flag-cache.json'),
         model: options.model ?? 'gemini-3.8-flash-high',
         ...(options.config ?? {}),
       },
@@ -231,7 +232,9 @@ await testCase('hang/timeout-settles', { scenario: 'hang', config: { printTimeou
   check('timeout does not throw the TDZ error', !/Cannot access 'transcriptPath'/.test(String(threw?.message ?? '')), String(threw?.message))
   check('timeout message mentions the ceiling', /did not finish within/i.test(String(threw?.message ?? '')), String(threw?.message))
   // 1200 ms ceiling + the 5000 ms minimum watchdog margin + slack.
-  check('the watchdog fired promptly', elapsed < 15_000, `${elapsed}ms`)
+  // Budget: printTimeoutMs 1200 + the 5000 ms minimum watchdog margin + the
+  // flag probe (one `help` + one `--print-timeout` probe) + slack.
+  check('the watchdog fired promptly', elapsed < 25_000, `${elapsed}ms`)
 })
 
 await testCase('slow-stream/cancel', { scenario: 'slow-stream' }, async (ctl) => {
@@ -266,8 +269,11 @@ await testCase('flags/argv-shape', { scenario: 'echo-argv', config: { effort: 'x
   // echo-argv prints the argv it received; we inspect the raw spawn record.
   await ctl.callTool('antigravity', { description: 'argv', prompt: 'show args' })
   const spawns = ctl.subprocess.spawned
-  const runSpawn = spawns.find((h) => h.argv.some((a) => a === '--print' || a === '-p'))
+  // The `--print-timeout` syntax probe also spawns `--print x`, so pick the
+  // run by the model flag the probe never passes, not by `--print`.
+  const runSpawn = spawns.find((h) => h.argv.includes('--model') && h.argv.some((a) => a === '--print' || a === '-p'))
   check('a print-mode spawn happened', runSpawn !== undefined, String(spawns.length))
+  check('the print-timeout syntax was probed once', spawns.some((h) => h.argv.includes('--print-timeout') && !h.argv.includes('--model')), spawns.map((h) => h.argv.join(' ')).join(' | '))
   const argv = runSpawn?.argv ?? []
   check('effort xhigh is passed through (no local whitelist rejection)', argv.includes('--effort') && argv.includes('xhigh'), argv.join(' '))
   check('--dangerously-skip-permissions is used by default', argv.includes('--dangerously-skip-permissions'), argv.join(' '))
@@ -290,14 +296,60 @@ await testCase('flags/unknown-effort-warns-not-throws', { scenario: 'success', c
 
 // ── 9. Capability probe + cache ─────────────────────────────────────────────
 await testCase('probe/caches-and-reuses', { scenario: 'success' }, async (ctl) => {
+  const agy = ctl.provider().config?.command ?? ctl.subprocess.spawned[0]?.argv?.[0]
+  const helpSpawns = () => ctl.subprocess.spawned.filter((h) => h.argv.includes('help'))
+  check('nothing is probed before the first run', helpSpawns().length === 0, String(helpSpawns().length))
+
   await ctl.callTool('antigravity', { description: 'probe', prompt: 'hi' })
-  const helpSpawns = ctl.subprocess.spawned.filter((h) => h.argv.includes('help'))
-  check('help is probed once for one build', helpSpawns.length <= 1, String(helpSpawns.length))
-  const cacheFile = join(ctl.provider().baseDir?.() ?? '', 'agy-flag-cache.json')
-  // The cache lives next to the plugin; assert through the provider instead.
-  const support = await ctl.provider().probeFlags(ctl.subprocess.spawned[0].argv[0], {}, ctl.workdir)
+  check('help is probed once for one build', helpSpawns().length === 1, String(helpSpawns().length))
+  // agy 1.4.x wants a unit on --print-timeout; the probe must discover that
+  // instead of shipping a bare millisecond count that fails at spawn time.
+  const timeoutSpawns = ctl.subprocess.spawned.filter((h) => h.argv.includes('--print-timeout'))
+  check('the --print-timeout syntax is confirmed', timeoutSpawns.length >= 1, String(timeoutSpawns.length))
+  check('a unit-spelled timeout was probed first', timeoutSpawns[0]?.argv.includes('1ms') === true, (timeoutSpawns[0]?.argv ?? []).join(' '))
+
+  // The chosen spelling reaches the real run.
+  const runSpawn = ctl.subprocess.spawned.find((h) => h.argv.includes('--model'))
+  const timeoutIdx = runSpawn?.argv.indexOf('--print-timeout') ?? -1
+  const value = timeoutIdx === -1 ? '' : runSpawn.argv[timeoutIdx + 1]
+  check('the run passes a unit-spelled --print-timeout', /^\d+(ms|s|m|h)$/.test(value), `${value} in ${(runSpawn?.argv ?? []).join(' ')}`)
+
+  // Second run in the same instance: no new probe.
+  await ctl.callTool('antigravity', { description: 'probe again', prompt: 'hi' })
+  check('a second run reuses the cached support', helpSpawns().length === 1, String(helpSpawns().length))
+
+  const support = await ctl.provider().probeFlags(agy, {}, ctl.workdir)
   check('probe reports probed=true for the fake CLI', support.probed === true, JSON.stringify(support))
   check('probe detects stream-json support', support.streamJson === true, JSON.stringify(support))
+})
+
+await testCase('probe/bare-timeout-build-downgrades', { scenario: 'success', config: { flagCachePath: '' } }, async (ctl) => {
+  // A pre-1.4 build takes a bare millisecond count. The probe must find that
+  // too, rather than hard-failing every run on the modern spelling.
+  process.env.FAKE_AGY_BARE_TIMEOUT = '1'
+  try {
+    const value = await ctl.callTool('antigravity', { description: 'old build', prompt: 'hi' })
+    check('a bare-timeout build still runs', value.kind === 'foreground', JSON.stringify(value).slice(0, 200))
+    const runSpawn = ctl.subprocess.spawned.find((h) => h.argv.includes('--model'))
+    const idx = runSpawn?.argv.indexOf('--print-timeout') ?? -1
+    const spelled = idx === -1 ? '' : runSpawn.argv[idx + 1]
+    check('the run falls back to a bare millisecond count', /^\d+$/.test(spelled), `${spelled} in ${(runSpawn?.argv ?? []).join(' ')}`)
+  } finally {
+    delete process.env.FAKE_AGY_BARE_TIMEOUT
+  }
+})
+
+await testCase('probe/cache-is-keyed-by-build-identity', { scenario: 'success' }, async (ctl, { workdir }) => {
+  const cacheFile = join(workdir, 'agy-flag-cache.json')
+  await ctl.callTool('antigravity', { description: 'cache', prompt: 'hi' })
+  check('the probe cache was written', existsSync(cacheFile), cacheFile)
+  const table = JSON.parse(readFileSync(cacheFile, 'utf8'))
+  const keys = Object.keys(table)
+  check('exactly one build was cached', keys.length === 1, keys.join(' , '))
+  // Identity = exe@size:mtime — an agy self-update lands on a new key instead
+  // of reusing yesterday's answers (the 1.4.5 -> 1.4.6 change made that real).
+  check('the cache key carries the build identity', /@\d+:\d+$/.test(keys[0] ?? ''), keys[0])
+  check('the cached entry records the timeout syntax', table[keys[0]]?.durationTimeout === true, JSON.stringify(table[keys[0]]))
 })
 
 // ── 10. Follow-up path ──────────────────────────────────────────────────────
@@ -346,7 +398,34 @@ await testCase('background/cancel', { scenario: 'slow-stream' }, async (ctl) => 
   check('cancel detail mentions the request', /cancel/i.test(String(settled?.detail ?? '')), settled?.detail)
 })
 
-// ── 12. Registry / tasks tool ───────────────────────────────────────────────
+// ── 12. Wake-on-settle (no polling) ─────────────────────────────────────────
+// The real `dsh-tool-jobs` wakes the owner agent when a job settles, but only
+// when `event.job.owner` resolves to a live agent. Two invariants make that
+// work end to end, and both are invisible to the plugin's own assertions:
+//   1. `jobs.start({ owner })` must receive the parent agent — omit it and
+//      completion is silently dropped (the job still runs and settles).
+//   2. the owner must be the *exec* agent, not the provider's `providerAgent`:
+//      `providerAgent` is a non-session stub, so `agents.get(owner)` returns
+//      undefined and the wake is discarded just the same.
+// The tool description must also stop telling the model to poll every 60s,
+// since that advice is what produced the polling loop in the first place.
+await testCase('wake/owner-is-exec-agent', { scenario: 'success' }, async (ctl) => {
+  await ctl.callTool('antigravity', { description: 'wake owner', prompt: 'hi', background: true })
+  const owners = [...ctl.jobOwners]
+  check('background job registered an owner', owners.length > 0, JSON.stringify(owners))
+  check('owner is the exec agent (has a session id)', owners[0]?.session?.id === 'test-session', JSON.stringify(owners[0]?.session))
+  check('owner is not the provider stub agent', owners[0] === ctl.lastToolAgent, 'owner identity differs from exec.agent')
+  check('owner resolves through agents.get', owners[0] !== undefined && owners[0].id === 'test-session', String(owners[0]?.id))
+})
+
+await testCase('wake/description-does-not-ask-for-polling', { scenario: 'success' }, async (ctl) => {
+  const description = String(ctl.tools.get('antigravity').description ?? '')
+  check('description promises a wake-up', /\bwoken\b|\bwakes you\b|\bnotif(y|ied)\b/i.test(description), description.slice(0, 200))
+  check('description does not mandate 60s polling', !/every ~?60 seconds/i.test(description), description)
+  check('description does not claim the wake-up is budgeted', !/wake-up is budgeted/i.test(description), description)
+})
+
+// ── 13. Registry / tasks tool ───────────────────────────────────────────────
 await testCase('tasks/lists-recorded-run', { scenario: 'success' }, async (ctl) => {
   const created = await ctl.callTool('antigravity', { description: 'recorded run', prompt: 'remember me' })
   const listed = await ctl.callTool('antigravity_tasks', {})
@@ -354,7 +433,7 @@ await testCase('tasks/lists-recorded-run', { scenario: 'success' }, async (ctl) 
   check('tasks tool reports the run', text.includes(created.task), text.slice(0, 400))
 })
 
-// ── 13. Transcript disabled ─────────────────────────────────────────────────
+// ── 14. Transcript disabled ─────────────────────────────────────────────────
 await testCase('transcript/disabled-writes-nothing', { scenario: 'success', config: { transcript: false } }, async (ctl, { transcriptDir }) => {
   const value = await ctl.callTool('antigravity', { description: 'no transcript', prompt: 'hi' })
   check('run still succeeds without a transcript', value.kind === 'foreground')
@@ -362,17 +441,26 @@ await testCase('transcript/disabled-writes-nothing', { scenario: 'success', conf
   check('no transcript file was written', files.length === 0, files.join(','))
 })
 
-// ── 14. Dispose terminates children ────────────────────────────────────────
+// ── 15. Dispose terminates children ────────────────────────────────────────
 await testCase('dispose/terminates-active-runs', { scenario: 'hang', config: { printTimeoutMs: 60_000 } }, async (ctl) => {
   const pending = ctl.callTool('antigravity', { description: 'still running', prompt: 'hang' }).catch((error) => error)
-  await new Promise((r) => setTimeout(r, 500))
+  // Wait for the RUN to be live, not for a fixed delay: the first call also
+  // pays for the one-time flag probe, so 500 ms could land before the run
+  // existed and `dispose()` would have nothing to terminate.
+  const deadline = Date.now() + 15_000
+  for (;;) {
+    const live = ctl.subprocess.spawned.some((h) => h.argv.includes('--model'))
+    if (live) break
+    if (Date.now() > deadline) throw new Error('the run never started; cannot test dispose')
+    await new Promise((r) => setTimeout(r, 50))
+  }
   ctl.dispose()
-  const outcome = await Promise.race([pending, new Promise((r) => setTimeout(() => r('timeout'), 8000))])
+  const outcome = await Promise.race([pending, new Promise((r) => setTimeout(() => r('timeout'), 15_000))])
   check('dispose settles an in-flight run', outcome !== 'timeout', String(outcome))
   check('dispose does not throw the TDZ error', !/Cannot access 'transcriptPath'/.test(String(outcome?.message ?? outcome)))
 })
 
-// ── 15. Tool output schemas are closed and satisfied ──────────────────────
+// ── 16. Tool output schemas are closed and satisfied ──────────────────────
 // Regression guard for a live-only failure: every tool declares
 // `additionalProperties: false`, so a field added to a result without a matching
 // declaration makes DSH discard an otherwise successful tool call. The offline

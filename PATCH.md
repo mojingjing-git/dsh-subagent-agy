@@ -164,6 +164,31 @@ and the `transcriptPath` TDZ throw on cancel/timeout (offline suite).
   `antigravity_followup` continues the *same* agy conversation under the same
   task key with `--conversation <id>`. Follow-ups to one conversation are
   serialized.
+- **Completion wakes the agent instead of being polled.** `background: true`
+  passes the *exec* agent as the job `owner`. `dsh-tool-jobs` then resolves
+  that id through `ctx.get('agents')` and wakes it when the job settles, so a
+  completion notice lands in the session (or opens a new turn on an idle
+  agent) with no polling. Two details make it work: the owner must be the exec
+  agent — the provider's own `providerAgent` is a non-session stub, so a wake
+  aimed at it is silently dropped — and `owner` must be set at all, or the job
+  still runs but completion is discarded. The tool descriptions now say "you
+  are woken in-session when the job settles" instead of the earlier "poll
+  `job_output` roughly every 60 seconds", which is what produced the polling
+  loop.
+- **`--print-timeout` is spelled the way THIS agy build wants.** agy 1.4.x
+  parses the flag with Go's `time.ParseDuration` and rejects a bare millisecond
+  count (`invalid value "600000" ... time: missing unit in duration`) before any
+  work starts. Earlier builds took the bare number, and `agy help` documents the
+  flag without its syntax, so the two are indistinguishable from `help` alone.
+  The plugin probes once (`--print x --print-timeout 1ms`) and, if that is
+  rejected, retries the bare form; the answer is cached, and if neither
+  spelling parses it warns and relies on the local watchdog. `flagCachePath`
+  controls that cache (`~/.dsh/agy-flag-cache.json` by default, `''` disables
+  it).
+- **Probe results are keyed by the executable's identity**, not by provider
+  instance: path + size + mtime. agy updates itself — this machine moved from
+  1.4.5 to 1.4.6 between two runs — and a cache that outlived the binary would
+  apply yesterday's answers to today's CLI. A new build re-probes on its own.
 - `--input-format stream-json` (persistent-process mode, multi-turn without a
   new process) — deliberately deferred; one process per turn is the shipped
   model.

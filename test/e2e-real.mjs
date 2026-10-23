@@ -47,6 +47,9 @@ async function boot(overrides = {}, options = {}) {
       model: MODEL,
       printTimeoutMs: 240_000,
       backgroundTimeoutMs: 600_000,
+      // A test must not write ~/.dsh: the cache would then hold a test artifact
+      // next to real builds and churn the 8-entry budget.
+      flagCachePath: '',
       ...overrides,
     },
     options,

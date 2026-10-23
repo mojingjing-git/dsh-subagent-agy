@@ -39,6 +39,26 @@ function parse(argv) {
 
 const { flags } = parse(argv)
 
+// `--print-timeout` validation, faithful to real agy 1.4.6: the value goes
+// through Go's time.ParseDuration, so a bare number is rejected with
+// "time: missing unit in duration" *before* any work starts. The plugin probes
+// this once to choose a spelling, so modelling it keeps that probe honest.
+// FAKE_AGY_BARE_TIMEOUT=1 models a pre-1.4 build that took a bare millisecond
+// count instead — the downgrade path the plugin must still support.
+const timeoutFlagIndex = argv.indexOf('--print-timeout')
+if (timeoutFlagIndex !== -1 && argv[timeoutFlagIndex + 1] !== undefined) {
+  const raw = argv[timeoutFlagIndex + 1]
+  const bareOk = process.env.FAKE_AGY_BARE_TIMEOUT === '1'
+  const unitOk = /^\d+(ms|s|m|h)$/.test(raw)
+  const ok = bareOk ? /^\d+$/.test(raw) : unitOk
+  if (!ok) {
+    process.stderr.write(
+      `invalid value "${raw}" for flag -print-timeout: time: ${/^\d+$/.test(raw) ? 'missing unit in duration' : 'invalid duration'} "${raw}"\nUsage of agy.exe:\n`,
+    )
+    process.exit(2)
+  }
+}
+
 // `agy help`: the usage dump the capability probe parses. Kept faithful to the
 // real 1.4.6 output for every flag the plugin cares about.
 if (argv.includes('help')) {

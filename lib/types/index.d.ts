@@ -98,6 +98,7 @@ export interface Config {
     outputFormat: 'json' | 'text';
     transcript: boolean;
     transcriptDir: string;
+    flagCachePath: string | undefined;
     extraArgs: string[];
     cwd: string;
     addDirs: string[];
