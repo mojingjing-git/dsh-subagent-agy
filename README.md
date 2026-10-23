@@ -1,5 +1,7 @@
 # @dsh-external/dsh-subagent-antigravity
 
+[![ci](https://github.com/mojingjing-git/dsh-subagent-agy/actions/workflows/ci.yml/badge.svg)](https://github.com/mojingjing-git/dsh-subagent-agy/actions/workflows/ci.yml)
+
 Delegate tasks to **Google Antigravity CLI (`agy`)** — a separate
 Gemini-powered coding agent on your machine — straight from DeepSeek Harness.
 **No Gemini API key is involved**: agy authenticates through your Antigravity

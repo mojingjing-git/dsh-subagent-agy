@@ -1,5 +1,7 @@
 # @dsh-external/dsh-subagent-antigravity
 
+[![ci](https://github.com/mojingjing-git/dsh-subagent-agy/actions/workflows/ci.yml/badge.svg)](https://github.com/mojingjing-git/dsh-subagent-agy/actions/workflows/ci.yml)
+
 把任务直接委托给本机的 **Google Antigravity CLI（`agy`）**——一个独立的
 Gemini 编程智能体——从 DeepSeek Harness 里直接使用。**不需要任何 API key**：
 agy 使用你的 Antigravity 登录态（系统凭据 / Google 登录）完成认证。
