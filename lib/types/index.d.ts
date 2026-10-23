@@ -60,11 +60,19 @@ import type { ContentBlock } from '@deepseek-ai/dsh-llm';
 export declare const name = "@dsh-external/dsh-subagent-antigravity";
 export declare const inject: string[];
 /** Register the `antigravity` job kind with the generic jobs registry (id prefix: `antigravity-N`). */
+declare module '@deepseek-ai/dsh-subagent' {
+    interface SubagentResult {
+        /** Absolute path of the NDJSON event stream this run recorded, when one was written. */
+        readonly transcript?: string;
+    }
+}
+import type { JobKindMap as _JobsKindMap } from '@deepseek-ai/dsh-jobs';
 declare module '@deepseek-ai/dsh-jobs' {
     interface JobKindMap {
         antigravity: 'antigravity';
     }
 }
+export type { _JobsKindMap };
 export declare const Config: any;
 /** Runtime config after schemastery defaults. */
 export interface Config {

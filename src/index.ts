@@ -98,11 +98,39 @@ export const name = '@dsh-external/dsh-subagent-antigravity'
 export const inject = ['subagents', 'subprocess', 'tools']
 
 /** Register the `antigravity` job kind with the generic jobs registry (id prefix: `antigravity-N`). */
+// v5 — `SubagentResult` is a sealed interface upstream (`output`, `structured?`,
+// `diagnostic?`, `stopReason`), so this plugin's added `transcript` field cannot
+// be returned as an object literal in a contextually-typed position. Declaring
+// the field by interface merging is the mechanism DSH uses itself for
+// `SubagentStopReasonMap` ("widens automatically as backends merge in variants"):
+// it keeps the extra field fully typed without widening the upstream seam.
+//
+// Wrapped in a module augmentation that TypeScript skips when the peer ships no
+// declarations at all (DSH 0.2.1-rc.2 sets `types` to a file it does not publish,
+// which makes the whole module `any` — see tsconfig.local.json). Augmenting an
+// `any` module is an error ("not a module"), hence the guard.
+declare module '@deepseek-ai/dsh-subagent' {
+  interface SubagentResult {
+    /** Absolute path of the NDJSON event stream this run recorded, when one was written. */
+    readonly transcript?: string
+  }
+}
+
+// The `dsh-jobs` import below is load-bearing for the augmentation: a
+// `declare module` for a specifier this file never imports declares a NEW
+// ambient module instead of merging into the real one, so `JobKindMap` would be
+// a fresh interface and the real `JobKind` union would stay `'bash' | 'subagent'`
+// — `jobs.start({ kind: 'antigravity' })` then fails to typecheck. Importing the
+// type first makes the declaration an augmentation, which is the same shape
+// `dsh-jobs` itself uses for `Context.jobs`.
+import type { JobKindMap as _JobsKindMap } from '@deepseek-ai/dsh-jobs'
 declare module '@deepseek-ai/dsh-jobs' {
   interface JobKindMap {
     antigravity: 'antigravity'
   }
 }
+// Keep the imported binding referenced so `noUnusedLocals` stays satisfied.
+export type { _JobsKindMap }
 
 const PREFIX = 'subagent-antigravity'
 /** In-memory stdout tail cap (1 MiB); overflow spills to a file (64 MiB). */
@@ -1355,14 +1383,21 @@ class AntigravitySubagentProvider implements SubagentProvider {
       }
     }
 
-    const result = settleRunResult({
+    const settled = settleRunResult({
       attempt,
       collectOutput: snapshot,
       cancelled: () => cancelled || request.signal.aborted,
       signal: request.signal,
       onAbort,
-      onError: (error, stopReason) => ctx.logger.warn(`${PREFIX}: agy run failed (${stopReason}): ${error.message}`),
+      onError: (error: Error, stopReason: string) =>
+        ctx.logger.warn(`${PREFIX}: agy run failed (${stopReason}): ${error.message}`),
     })
+    // `settleRunResult` synthesises `{ output, stopReason }` on the aborted and
+    // error paths instead of returning what `attempt` produced, so any extra
+    // field on the attempt's result is dropped exactly when it is most useful:
+    // a cancelled or failed run is when you want the transcript path. Re-attach
+    // it here (best effort — a run that never wrote one stays undefined).
+    const result = settled.then((value) => (transcriptPath === undefined ? value : { ...value, transcript: transcriptPath }))
     // Track for the tasks/cancel tools; released when the result settles.
     this.trackActive(
       plan.id,
@@ -1675,7 +1710,7 @@ async function settleForegroundRun(
   run: SubagentRun,
 ): Promise<{ kind: 'foreground'; runId: string; output: JsonValue[] }> {
   const [execution] = await Promise.allSettled([
-    run.result.then((result) => {
+    run.result.then((result: SubagentResult) => {
       const error = stopReasonError(result)
       if (error !== undefined) throw new Error(withPartialText(error, result.output))
       return {

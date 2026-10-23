@@ -24,14 +24,19 @@ jobs:
         with:
           node-version: ${{ matrix.node }}
 
-      - name: Install dev dependencies
-        # No install of the deepseek-ai peers: they are injected by the DSH
-        # host at runtime and are not on the public registry. The offline suite
-        # drives the plugin through a stub context instead.
-        run: npm install --no-audit --no-fund --ignore-scripts
+      - name: Install dependencies
+        # The @deepseek-ai/* packages are peerDependencies, and they are also
+        # devDependencies so that a clean clone can typecheck against their real
+        # declarations. Several of them have unpublished peer chains
+        # (`dsh-type-meta` returns 404), so automatic peer resolution is off —
+        # everything the compiler needs is listed explicitly.
+        run: npm install --no-audit --no-fund --ignore-scripts --no-package-lock --legacy-peer-deps
+
+      - name: Typecheck (real peer declarations)
+        run: npx tsc -p tsconfig.typecheck.json
 
       - name: Build (tsc → lib/)
-        run: npx tsc -p tsconfig.json
+        run: npx tsc -p tsconfig.local.json
 
       - name: Offline suite
         run: node test/run.mjs

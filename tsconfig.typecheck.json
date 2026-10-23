@@ -1,0 +1,17 @@
+{
+  "//": "Typecheck against REAL peer declarations (what CI does). Requires the",
+  "//2": "@deepseek-ai/* packages installed — they are listed in devDependencies",
+  "//3": "as well as peerDependencies precisely so this gate can resolve them.",
+  "//4": "This is the check that catches a wrong field on `SubagentResult`, a",
+  "//5": "mis-targeted module augmentation, or anything else only a typed seam",
+  "//6": "can prove. `declaration` is off on purpose: emitting .d.ts here would",
+  "//7": "drag TS2742 (`Config` inferred through schemastery's pnpm path) into a",
+  "//8": "check that is supposed to be about types, not portability.",
+  "extends": "./tsconfig.json",
+  "compilerOptions": {
+    "noEmit": true,
+    "declaration": false,
+    "declarationDir": null,
+    "declarationMap": false
+  }
+}

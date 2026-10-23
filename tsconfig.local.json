@@ -1,0 +1,16 @@
+{
+  "//": "Build against the DSH install on THIS machine. DSH 0.2.1-rc.2 declares",
+  "//2": "`types: lib/types/index.d.ts` in its package.json but does not publish",
+  "//3": "that file, so every peer import degrades to `any` (TS7016) and cannot be",
+  "//4": "augmented (TS2665/TS2664). That is an upstream packaging bug, not a fault",
+  "//5": "in this plugin, so the local build includes src/peers.d.ts (loose ambient",
+  "//6": "declarations that keep the module augmentations legal) and tolerates the",
+  "//7": "missing declarations. Correctness is gated by `npm run typecheck` (real",
+  "//8": "peer types, what CI runs) plus the offline suite.",
+  "extends": "./tsconfig.json",
+  "compilerOptions": {
+    "noImplicitAny": false,
+    "skipLibCheck": true
+  },
+  "include": ["src"]
+}
