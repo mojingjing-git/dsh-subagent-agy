@@ -13,7 +13,7 @@ login (system keyring / Google Sign-In).
 > by ZEM17 (`@dsh-external/dsh-subagent-antigravity@0.2.0`, MIT). This fork adds
 > DSH 0.2.1-rc.2 compatibility, per-run transcripts, agy 1.4.x support and the
 > test suites described below — see [PATCH.md](PATCH.md) for every change and why.
-> Version `0.2.0-patched.5`.
+> Version `0.2.0-patched.6`.
 
 ---
 
@@ -106,7 +106,7 @@ plugin's settings section (e.g. `$DSH_HOME/settings.yaml`):
 ```yaml
 dsh-subagent-antigravity:
   model: gemini-3.1-pro-high   # agy models; empty = agy default
-  effort: high                 # low | medium | high
+  effort: high                 # low | medium | high | xhigh | max
   printTimeoutMs: 300000       # foreground ceiling (5 min)
   backgroundTimeoutMs: 3600000 # background ceiling (1 h)
   skipPermissions: true        # auto-approve agy tool calls (headless needs it)
@@ -124,15 +124,18 @@ dsh-subagent-antigravity:
 | `cancelToolName` | `antigravity_cancel` | cancel-running-task tool name |
 | `command` | `agy` | executable (PATH name or absolute path) |
 | `model` | `''` | `--model <slug>` (see `agy models`); empty = agy default |
-| `effort` | `''` | `--effort low\|medium\|high`; empty = omit |
+| `effort` | `''` | `--effort low\|medium\|high\|xhigh\|max`; empty = omit |
 | `agent` | `''` | `--agent <name>`; empty = omit |
-| `printTimeoutMs` | `300000` | foreground run ceiling (`--print-timeout`) |
+| `printTimeoutMs` | `300000` | foreground run ceiling (`--print-timeout`; the plugin probes whether this build wants a unit) |
 | `backgroundTimeoutMs` | `3600000` | background run ceiling (1 h) |
 | `watchdogMarginMs` | `60000` | force-kill margin after the ceiling if agy hangs |
 | `skipPermissions` | `true` | `--dangerously-skip-permissions` (auto-approve agy tool calls) |
 | `sandbox` | `false` | `--sandbox` (agy terminal-sandbox restrictions) |
 | `avoidBrowser` | `true` | append a note telling agy NOT to use headless browser tools (they can hang on some machines) |
 | `avoidLargeReads` | `true` | append a note telling agy to inspect files > 1 MB via grep/sed instead of its read tool (4 MB cap) |
+| `transcript` | `true` | write each run's full agy event stream (prompt + every tool call + final result) under `transcriptDir` |
+| `transcriptDir` | `''` | transcript directory; empty = `~/.dsh/agy-transcripts` |
+| `flagCachePath` | `''` | where probed `agy help` support is cached; unset = `~/.dsh/agy-flag-cache.json`, an explicit empty string disables caching |
 | `outputFormat` | `json` | wire format (`json` or `text`); background prefers `stream-json` automatically |
 | `extraArgs` | `[]` | raw extra argv appended after generated flags |
 | `cwd` | `''` | working-directory override; empty = the session workspace |
@@ -154,7 +157,8 @@ carries agy's `conversation_id`; the plugin records it in a durable registry
 (`~/.dsh/agy-conversations.json`), and `antigravity_followup` resumes the
 same conversation via `--conversation <id>`. Background runs use
 `stream-json` for live progress and register with DSH's jobs system
-(`job_output` / `job_kill`). A local watchdog terminates hung runs, and all
+(`job_output` / `job_kill`). The job's owner is the calling agent, so a
+settled job **wakes** it — the model is told not to poll. A local watchdog terminates hung runs, and all
 timeouts interrupt: nothing ever waits forever.
 
 `antigravity_tasks` surfaces the durable registry (restart-safe) plus live

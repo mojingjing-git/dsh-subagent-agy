@@ -11,7 +11,7 @@ agy 使用你的 Antigravity 登录态（系统凭据 / Google 登录）完成�
 > **本项目是 fork。** 上游是 ZEM17 的 [ZEM17/dsh-subagent-agy](https://github.com/ZEM17/dsh-subagent-agy)
 > （`@dsh-external/dsh-subagent-antigravity@0.2.0`，MIT）。本 fork 增加了 DSH
 > 0.2.1-rc.2 兼容、每次运行的完整轨迹、agy 1.4.x 支持，以及下方描述的测试套件——
-> 全部改动及原因见 [PATCH.md](PATCH.md)。当前版本 `0.2.0-patched.5`。
+> 全部改动及原因见 [PATCH.md](PATCH.md)。当前版本 `0.2.0-patched.6`。
 
 ---
 
@@ -97,7 +97,7 @@ agy 的模型是多模态的——把图片路径写进 prompt，它就能描述
 ```yaml
 dsh-subagent-antigravity:
   model: gemini-3.1-pro-high   # agy models 里的模型；留空 = agy 默认
-  effort: high                 # low | medium | high
+  effort: high                 # low | medium | high | xhigh | max
   printTimeoutMs: 300000       # 前台任务上限（5 分钟）
   backgroundTimeoutMs: 3600000 # 后台任务上限（1 小时）
   skipPermissions: true        # 自动批准 agy 的工具调用（无头模式必需）
@@ -115,15 +115,18 @@ dsh-subagent-antigravity:
 | `cancelToolName` | `antigravity_cancel` | 取消任务工具名 |
 | `command` | `agy` | 可执行文件（PATH 名或绝对路径） |
 | `model` | `''` | `--model <slug>`（见 `agy models`）；留空 = agy 默认 |
-| `effort` | `''` | `--effort low\|medium\|high`；留空 = 不传 |
+| `effort` | `''` | `--effort low\|medium\|high\|xhigh\|max`；留空 = 不传 |
 | `agent` | `''` | `--agent <name>`；留空 = 不传 |
-| `printTimeoutMs` | `300000` | 前台任务上限（`--print-timeout`） |
+| `printTimeoutMs` | `300000` | 前台任务上限（`--print-timeout`；插件会探测本机 agy 是否要求带单位） |
 | `backgroundTimeoutMs` | `3600000` | 后台任务上限（1 小时） |
 | `watchdogMarginMs` | `60000` | agy 卡死时、超时上限之外强制终止的余量 |
 | `skipPermissions` | `true` | `--dangerously-skip-permissions`（自动批准 agy 工具调用） |
 | `sandbox` | `false` | `--sandbox`（agy 终端沙箱限制） |
 | `avoidBrowser` | `true` | 在 prompt 中追加"不要用浏览器工具"说明（部分机器上无头浏览器会卡死） |
 | `avoidLargeReads` | `true` | 在 prompt 中追加"超过 1 MB 的文件用 grep/sed 读取"说明（agy 读取工具有 4 MB 上限） |
+| `transcript` | `true` | 每次运行把 agy 完整事件流（提示词 + 每次工具调用 + 最终结果）写入 `transcriptDir` |
+| `transcriptDir` | `''` | 轨迹目录；留空 = `~/.dsh/agy-transcripts` |
+| `flagCachePath` | `''` | `agy help` 参数探测结果的缓存位置；不配 = `~/.dsh/agy-flag-cache.json`，显式传空串则关闭缓存 |
 | `outputFormat` | `json` | 输出格式（`json` 或 `text`）；后台模式自动优先 `stream-json` |
 | `extraArgs` | `[]` | 追加在生成参数之后的原始 argv |
 | `cwd` | `''` | 工作目录覆盖；留空 = 会话工作区 |
