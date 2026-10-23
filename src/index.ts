@@ -60,10 +60,8 @@ import { defineTool, type JsonValue, type ToolRunContext } from '@deepseek-ai/ds
 import {
   NO_START_CAPABILITIES,
   assertPositiveFinite,
-  resolveChildCwd,
   settleRunResult,
   subprocessRunHandle,
-  validateConfiguredCwd,
   type ResolvedSubagentStartRequest,
   type SubagentProvider,
   type SubagentResult,
@@ -75,8 +73,26 @@ import type { SessionId } from '@deepseek-ai/dsh-session'
 import type { Agent } from '@deepseek-ai/dsh-agent'
 import type { ContentBlock } from '@deepseek-ai/dsh-llm'
 import { dirname, isAbsolute, join } from 'node:path'
-import { tmpdir } from 'node:os'
+import { homedir, tmpdir } from 'node:os'
 import { mkdirSync, readFileSync, renameSync, rmSync, statSync, writeFileSync } from 'node:fs'
+
+// ── DSH 0.2.1 compatibility shims (v1) ──────────────────────────────────────
+// Upstream imported `resolveChildCwd` and `validateConfiguredCwd` from
+// @deepseek-ai/dsh-subagent. DSH 0.2.1-rc.2 exports neither, so the plugin died
+// with an ESM link error before its first line ran. Both are small,
+// self-contained path policies; these local copies reproduce the upstream
+// behaviour instead of dropping the checks. They are pure functions over the
+// same inputs, so they stay correct if a future DSH restores the originals.
+function resolveChildCwd(parentCwd: string | undefined, configuredCwd: string): string {
+  const base = configuredCwd.trim()
+  if (base.length === 0) return parentCwd ?? process.cwd()
+  return isAbsolute(base) ? base : join(parentCwd ?? process.cwd(), base)
+}
+
+function validateConfiguredCwd(cwd: string, field: string = 'cwd'): void {
+  if (typeof cwd !== 'string') throw new TypeError(`${field} must be a string`)
+  if (cwd.includes('\u0000')) throw new Error(`${field} must not contain a NUL byte`)
+}
 
 export const name = '@dsh-external/dsh-subagent-antigravity'
 export const inject = ['subagents', 'subprocess', 'tools']
@@ -110,6 +126,8 @@ const MAX_RUN_RECORDS = 64
 const MAX_ARGV_PROMPT_CHARS = 30_000
 /** Bound for the one-time `agy help` flag probe. */
 const PROBE_TIMEOUT_MS = 10_000
+/** `--effort` values agy 1.4.6 documents (v5; an unknown value is warned, not rejected). */
+const EFFORT_LEVELS = ['low', 'medium', 'high', 'xhigh', 'max']
 /**
  * Appended to every prompt when `avoidBrowser` is on: agy's headless
  * `browser_*` tools can hang indefinitely (browser launch / page load never
@@ -136,7 +154,7 @@ export const Config = z.object({
   command: z.string().default('agy'),
   /** `--model <slug>`; empty omits the flag (agy's default model). */
   model: z.string().default(''),
-  /** `--effort`; one of low | medium | high; empty omits the flag. */
+  /** `--effort`; one of low | medium | high | xhigh | max; empty omits the flag. */
   effort: z.string().default(''),
   /** `--agent <name>`; empty omits the flag. */
   agent: z.string().default(''),
@@ -238,6 +256,16 @@ export const Config = z.object({
   proxy: z.string().default(''),
   /** Durable follow-up registry path; empty derives `~/.dsh/agy-conversations.json`. */
   registryPath: z.string().default(''),
+  /**
+   * Persist each run's raw agy event stream as NDJSON (v2). The stream carries
+   * the agent's text, every tool call with its parameters, and the final
+   * result, so a transcript is the only way to see what a delegated task
+   * actually did. `transcriptDir` defaults to `~/.dsh/agy-transcripts`, one file
+   * per task key plus an `index.json`.
+   */
+  transcript: z.boolean().default(true),
+  /** Transcript directory override; empty derives `~/.dsh/agy-transcripts`. */
+  transcriptDir: z.string().default(''),
   /** Grace period for tree-scoped termination (SIGTERM→SIGKILL escalation). */
   disposeGraceMs: z.number().step(1).min(100).max(120_000).default(5_000),
 })
@@ -264,6 +292,8 @@ export interface Config {
   tasksToolName: string
   cancelToolName: string
   outputFormat: 'json' | 'text'
+  transcript: boolean
+  transcriptDir: string
   extraArgs: string[]
   cwd: string
   addDirs: string[]
@@ -521,8 +551,30 @@ function parseJsonObject(text: string): AgyJsonReply | undefined {
  * Find the agy JSON reply in stdout: try the whole trimmed output first,
  * then scan line by line so a preamble (progress/status line before the
  * JSON object) cannot hide the `conversation_id`.
+ *
+ * v3 — `stream-json` support. In stream-json mode agy emits NDJSON in which the
+ * terminal object is `{"event":"result","result":{status,response,...}}`. The
+ * reply is nested one level deeper than the plain `json` mode, so the generic
+ * scan below used to return the *first* object it saw (the `init` event, which
+ * has no `status`/`response`) and the caller reported a successful run as
+ * `agy exited with code 0`. Look for the `result` event explicitly first.
  */
 function tryParseJsonOutput(stdout: string): AgyJsonReply | undefined {
+  for (const line of stdout.split(/\r?\n/)) {
+    const candidate = line.trim()
+    if (candidate.length === 0 || candidate[0] !== '{') continue
+    try {
+      const obj = JSON.parse(candidate) as unknown
+      if (obj !== null && typeof obj === 'object' && (obj as { event?: unknown }).event === 'result') {
+        const inner = (obj as { result?: unknown }).result
+        if (inner !== null && typeof inner === 'object' && !Array.isArray(inner)) {
+          return inner as AgyJsonReply
+        }
+      }
+    } catch {
+      // not JSON on this line
+    }
+  }
   const trimmed = stdout.trim()
   if (trimmed.length > 0 && trimmed[0] === '{') {
     const whole = parseJsonObject(trimmed)
@@ -540,6 +592,83 @@ function tryParseJsonOutput(stdout: string): AgyJsonReply | undefined {
 /** True when agy rejected a flag it does not define (older builds). */
 function isUnknownFlagError(stderr: string): boolean {
   return /flag provided but not defined|unknown flag|not defined: -output-format/i.test(stderr)
+}
+
+// ── Per-run transcripts (v2, v4) ────────────────────────────────────────────
+// The agy event stream is the only complete record of a delegated task: the
+// final `response` alone hides which tools ran and with what arguments.
+
+/**
+ * First transcript line: the prompt the caller asked (v4). The agy event stream
+ * itself does not carry the prompt, so without this the transcript would start
+ * mid-flight and the reader could not tell what agy was asked to do.
+ * @param plan - the run plan.
+ * @returns one NDJSON line, or '' when the header cannot be serialized.
+ */
+function transcriptHeader(plan: SpawnPlan): string {
+  try {
+    return (
+      JSON.stringify({
+        event: 'prompt',
+        task: plan.id,
+        label: plan.label,
+        cwd: plan.childCwd,
+        model: plan.model,
+        prompt: plan.prompt,
+      }) + '\n'
+    )
+  } catch {
+    return ''
+  }
+}
+
+/**
+ * Directory where per-run transcripts are written.
+ * @param config - the plugin configuration.
+ * @returns the transcript directory.
+ */
+function resolveTranscriptDir(config: Config): string {
+  if (typeof config.transcriptDir === 'string' && config.transcriptDir.length > 0) return config.transcriptDir
+  return join(homedir(), '.dsh', 'agy-transcripts')
+}
+
+/**
+ * Persist the raw agy event stream of one run and index it.
+ *
+ * Best effort by design: a transcript failure must never fail the run that
+ * produced it, so every error collapses to `undefined`.
+ * @param config - the plugin configuration.
+ * @param id - the run id (the task key the tools hand out).
+ * @param text - the raw NDJSON stream.
+ * @returns the transcript path, or undefined when writing failed.
+ */
+function writeTranscript(config: Config, id: string, text: string): string | undefined {
+  try {
+    const dir = resolveTranscriptDir(config)
+    mkdirSync(dir, { recursive: true })
+    // Run ids look like `<session>::agy::<seq>`; `:` is not portable in a
+    // filename, so the same sanitizer is applied here and nowhere else — the
+    // reader (agy-transcript.mjs) resolves files through index.json.
+    const safe = String(id).replace(/[^A-Za-z0-9._-]+/g, '_')
+    const path = join(dir, `${safe}.ndjson`)
+    writeFileSync(path, text, 'utf8')
+    const indexPath = join(dir, 'index.json')
+    let index: { task: string; file: string; at: string }[] = []
+    try {
+      const raw = readFileSync(indexPath, 'utf8')
+      const parsed = JSON.parse(raw) as unknown
+      if (Array.isArray(parsed)) index = parsed as { task: string; file: string; at: string }[]
+    } catch {
+      index = []
+    }
+    index = index.filter((entry) => entry && entry.task !== id)
+    index.push({ task: id, file: path, at: new Date().toISOString() })
+    index = index.slice(-100)
+    writeFileSync(indexPath, JSON.stringify(index, null, 2), 'utf8')
+    return path
+  } catch {
+    return undefined
+  }
 }
 
 /** True when the detail smells like a missing/expired login. */
@@ -667,6 +796,10 @@ interface SpawnPlan {
   releasePromptFile: () => void
   id: SessionId
   label: string
+  /** Resolved model flag (for the transcript header; '' means agy's default). */
+  model: string
+  /** The prompt text actually sent (transcript header; v4). */
+  prompt: string
 }
 
 class AntigravitySubagentProvider implements SubagentProvider {
@@ -902,7 +1035,8 @@ class AntigravitySubagentProvider implements SubagentProvider {
   ): Promise<SpawnPlan> {
     const { ctx, config } = this
     const addDirs = validateAddDirs(PREFIX, dirs, 'config/tool')
-    const childCwd = cwdOverride ?? resolveChildCwd(PREFIX, this.configuredCwd, request.parent.session.header.cwd)
+    const inheritedCwd = request.parent.session.header.cwd ?? ''
+    const childCwd = cwdOverride ?? resolveChildCwd(inheritedCwd, this.configuredCwd ?? '')
     const env = { ...scrubbedParentEnv(), ...config.env }
     applyProxyEnv(env, resolveProxyUrl(config))
     const exe = await this.resolveExecutable(request, env)
@@ -964,8 +1098,13 @@ class AntigravitySubagentProvider implements SubagentProvider {
     ]
     if (config.model.length > 0) baseArgv.push('--model', config.model)
     if (config.effort.length > 0) {
-      if (config.effort !== 'low' && config.effort !== 'medium' && config.effort !== 'high') {
-        throw new Error(`${PREFIX}: effort must be one of low | medium | high`)
+      // v5 — agy 1.4.6 accepts low | medium | high | xhigh | max. The old
+      // three-value whitelist rejected `xhigh`/`max` outright, which made two
+      // documented reasoning levels unusable. Warn on an unrecognized value but
+      // still pass it through: agy is the authority on its own flag, and a
+      // future build may add levels this plugin cannot know about.
+      if (!EFFORT_LEVELS.includes(config.effort)) {
+        ctx.logger.warn(`${PREFIX}: effort "${config.effort}" is not one of ${EFFORT_LEVELS.join(' | ')}; passing it to agy anyway`)
       }
       baseArgv.push('--effort', config.effort)
     }
@@ -997,6 +1136,8 @@ class AntigravitySubagentProvider implements SubagentProvider {
       releasePromptFile,
       id: `${request.parent.session.id}::agy::${this.nextRunId()}` as unknown as SessionId,
       label: request.label ?? 'antigravity task',
+      model: config.model,
+      prompt: promptText,
     }
   }
 
@@ -1066,6 +1207,12 @@ class AntigravitySubagentProvider implements SubagentProvider {
     let timedOut = false
     let watchdog: NodeJS.Timeout | undefined
     let current: { handle: SubprocessHandle } | undefined
+    // v5 — declared here, not at the write site. The aborted and timed-out
+    // branches below reference it, and those branches can run *before* the
+    // process produces any stdout; a `const` declared next to the write would
+    // throw `Cannot access 'transcriptPath' before initialization` and turn a
+    // cancelled or timed-out run into an unhandled rejection.
+    let transcriptPath: string | undefined
     const ensureTerminated = (): void => {
       current?.handle.terminate()
     }
@@ -1089,7 +1236,12 @@ class AntigravitySubagentProvider implements SubagentProvider {
 
     const spawnOnce = (jsonModeArg: boolean) => {
       const argv = [...plan.baseArgv]
-      if (jsonModeArg) argv.push('--output-format', 'json')
+      // v5 — `stream-json` when the probe confirmed it, `json` otherwise. The
+      // foreground path used to hard-code `json`, which returns only the final
+      // response and hides every intermediate step; stream-json is what makes a
+      // complete transcript possible. The strict `=== true` keeps an unprobed
+      // build on the format upstream has always used.
+      if (jsonModeArg) argv.push('--output-format', plan.support.streamJson === true ? 'stream-json' : 'json')
       if (conversationId !== undefined) argv.push('--conversation', conversationId)
       const handle = ctx.subprocess.spawn({
         argv,
@@ -1146,7 +1298,7 @@ class AntigravitySubagentProvider implements SubagentProvider {
           stdout = readStdout(handle)
           stderr = readStderr(handle)
         }
-        if (cancelled || request.signal.aborted) return { output: textBlocks(stdout), stopReason: 'aborted' }
+        if (cancelled || request.signal.aborted) return { output: textBlocks(stdout), stopReason: 'aborted', transcript: transcriptPath }
         if (timedOut) {
           return {
             output: textBlocks(
@@ -1157,15 +1309,21 @@ class AntigravitySubagentProvider implements SubagentProvider {
               ),
             ),
             stopReason: 'error',
+            transcript: transcriptPath,
           }
         }
+
+        // v2/v4 — persist the raw stream before parsing it, so a parse failure
+        // still leaves the evidence on disk. The header carries the prompt,
+        // which the agy event stream itself never includes.
+        transcriptPath = config.transcript === false ? undefined : writeTranscript(config, plan.id, transcriptHeader(plan) + stdout)
 
         const parsed = tryParseJsonOutput(stdout)
         if (parsed !== undefined) {
           const conversation = parsed.conversation_id
           if (parsed.status === 'SUCCESS' && typeof parsed.response === 'string') {
             this.remember(plan.id, conversation, plan.childCwd, plan.label)
-            return { output: textBlocks(parsed.response), stopReason: 'completed' }
+            return { output: textBlocks(parsed.response), stopReason: 'completed', transcript: transcriptPath }
           }
           const detail = this.maybeAutoLogin(
             typeof parsed.error === 'string' && parsed.error.length > 0
@@ -1173,7 +1331,7 @@ class AntigravitySubagentProvider implements SubagentProvider {
               : stderr.trim() || `agy exited with code ${String(outcome.exitCode)}`,
           )
           this.remember(plan.id, conversation, plan.childCwd, plan.label)
-          return { output: textBlocks(detail), stopReason: 'error' }
+          return { output: textBlocks(detail), stopReason: 'error', transcript: transcriptPath }
         }
 
         // Plain-text path (text mode or non-JSON stdout).
@@ -1184,12 +1342,13 @@ class AntigravitySubagentProvider implements SubagentProvider {
                 `agy exited 0 but produced no stdout (stderr: ${stderr.trim() || '(empty)'}) — known Antigravity CLI behavior: \`agy -p\` can drop output under a non-TTY pipe on some builds. Verify with an interactive \`agy\` run once, then retry, or upgrade agy.`,
               ),
               stopReason: 'error',
+              transcript: transcriptPath,
             }
           }
-          return { output: textBlocks(stdout), stopReason: 'completed' }
+          return { output: textBlocks(stdout), stopReason: 'completed', transcript: transcriptPath }
         }
         const detail = this.maybeAutoLogin(stderr.trim().length > 0 ? stderr.trim() : `agy exited with code ${String(outcome.exitCode)}`)
-        return { output: textBlocks(detail), stopReason: 'error' }
+        return { output: textBlocks(detail), stopReason: 'error', transcript: transcriptPath }
       } finally {
         disarmWatchdog()
         plan.releasePromptFile()
@@ -1538,10 +1697,16 @@ async function settleForegroundRun(
 }
 
 export function apply(ctx: Context, config: Config): void {
-  assertPositiveFinite(PREFIX, 'disposeGraceMs', config.disposeGraceMs)
-  assertPositiveFinite(PREFIX, 'watchdogMarginMs', config.watchdogMarginMs)
-  assertPositiveFinite(PREFIX, 'backgroundTimeoutMs', config.backgroundTimeoutMs)
-  const configuredCwd = config.cwd.length > 0 ? validateConfiguredCwd(PREFIX, config.cwd) : undefined
+  /** Validate then return the configured cwd (the shim itself returns void). */
+  const validatedCwd = (cwd: string): string => {
+    validateConfiguredCwd(cwd)
+    return cwd
+  }
+  const assertFinite = assertPositiveFinite as (prefix: string, key: string, value: number) => void
+  assertFinite(PREFIX, 'disposeGraceMs', config.disposeGraceMs)
+  assertFinite(PREFIX, 'watchdogMarginMs', config.watchdogMarginMs)
+  assertFinite(PREFIX, 'backgroundTimeoutMs', config.backgroundTimeoutMs)
+  const configuredCwd = config.cwd.length > 0 ? validatedCwd(config.cwd) : undefined
 
   // Provider registration (effect-scoped: stop/update/unload removes it).
   const provider = new AntigravitySubagentProvider(ctx, config, configuredCwd)
@@ -1605,6 +1770,10 @@ export function apply(ctx: Context, config: Config): void {
                 runId: { type: 'string' },
                 task: { type: 'string' },
                 jobId: { type: 'string' },
+                // Declared, not decorative: the schema is `additionalProperties:
+                // false`, so an undeclared field is silently stripped.
+                conversationId: { type: 'string' },
+                label: { type: 'string' },
                 output: { type: 'array', items: { type: 'json' } },
               },
             },
@@ -1668,7 +1837,17 @@ export function apply(ctx: Context, config: Config): void {
                 records[settled.runId] = record
               }, ctx.logger)
             }
-            return { ...settled, task: settled.runId }
+            // v5 — surface the agy conversation id (and label) alongside the
+            // task key. The DSH output schema is strict: an undeclared field is
+            // dropped and the caller then cannot correlate a task with the agy
+            // conversation it maps to, so the field must be both returned and
+            // declared in `output.schema`.
+            return {
+              ...settled,
+              task: settled.runId,
+              ...(record?.conversationId !== undefined ? { conversationId: record.conversationId } : {}),
+              ...(record !== undefined ? { label: record.label } : {}),
+            }
           },
         }),
       ),
@@ -1708,6 +1887,9 @@ export function apply(ctx: Context, config: Config): void {
                 kind: { type: 'string', required: true, const: 'foreground' },
                 runId: { type: 'string', required: true },
                 task: { type: 'string', required: true },
+                // Declared for the same reason as the antigravity tool: the
+                // schema strips undeclared fields.
+                conversationId: { type: 'string' },
                 output: { type: 'array', required: true, items: { type: 'json' } },
               },
             },
@@ -1744,7 +1926,15 @@ export function apply(ctx: Context, config: Config): void {
             await updateTaskRegistry(config, (records) => {
               records[args.task] = { ...record, createdAt: Date.now(), ...(refreshed !== undefined ? { conversationId: refreshed.conversationId } : {}) }
             }, ctx.logger)
-            return { ...settled, task: args.task }
+            return {
+              ...settled,
+              task: args.task,
+              ...(refreshed?.conversationId !== undefined
+                ? { conversationId: refreshed.conversationId }
+                : record.conversationId !== undefined
+                  ? { conversationId: record.conversationId }
+                  : {}),
+            }
           },
         }),
       ),

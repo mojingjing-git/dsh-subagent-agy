@@ -1,4 +1,9 @@
 node_modules/
-lib/
 *.tsbuildinfo
 *.tgz
+
+# The compiled bundle is tracked on purpose: `dsh plugin add` consumes a
+# published package, and a user who installs straight from GitHub without a
+# build step must get a working `lib/index.js`. It is reproducible from `src/`
+# with `npm run build`, and CI rebuilds it to check the two agree.
+!lib/
