@@ -71,22 +71,6 @@ function resolveAgy() {
   return undefined
 }
 
-function parseJsonReply(text) {
-  for (const line of text.split(/\r?\n/)) {
-    const candidate = line.trim()
-    if (candidate.length === 0 || candidate[0] !== '{') continue
-    try {
-      const obj = JSON.parse(candidate)
-      if (obj && typeof obj === 'object' && !Array.isArray(obj)) {
-        if ('status' in obj || 'conversation_id' in obj || 'response' in obj) return obj
-      }
-    } catch {
-      // keep scanning
-    }
-  }
-  return undefined
-}
-
 console.log('== agy presence ==')
 const agy = resolveAgy()
 if (agy) {
@@ -198,38 +182,27 @@ if (agy) {
 }
 
 if (E2E && agy) {
-  console.log('== e2e: PONG round trip + follow-up ==')
-  const first = await run([agy, '-p', 'Reply with the single word: PONG', '--output-format', 'json', '--print-timeout', '120s'], {
-    timeoutMs: 180_000,
-  })
-  const reply = parseJsonReply(first.stdout)
-  if (!reply || reply.status !== 'SUCCESS' || !/PONG/i.test(String(reply.response ?? ''))) {
-    report(
-      'e2e round 1',
-      `unexpected reply: code=${String(first.code)} status=${String(reply?.status)} response=${JSON.stringify(reply?.response)} stderr=${first.stderr.trim().slice(0, 300)}`,
-    )
+  // The live checks live in test/e2e-real.mjs, which drives the REAL plugin
+  // against the REAL agy (the same harness the offline suite uses). Running the
+  // binary directly here would prove nothing about the plugin.
+  console.log('== e2e: driving the plugin against the real agy ==')
+  const suite = await run(
+    [process.execPath, join(ROOT, 'test/e2e-real.mjs')],
+    { timeoutMs: 900_000, env: { ...process.env, AGY_BIN: agy, NO_COLOR: '1' } },
+  )
+  const summary = /(\d+)\/(\d+) assertions passed/.exec(String(suite.stdout ?? ''))
+  if (suite.code === 0 && summary) {
+    pass(`plugin end-to-end suite passed (${summary[1]}/${summary[2]})`)
   } else {
-    pass(`round 1 answered PONG (conversation_id: ${reply.conversation_id ?? 'none'})`)
-    const conversationId = reply.conversation_id
-    if (conversationId) {
-      const second = await run(
-        [agy, '-p', 'What was the exact word you replied in the previous turn? Reply with only that word.', '--conversation', conversationId, '--output-format', 'json', '--print-timeout', '120s'],
-        { timeoutMs: 180_000 },
-      )
-      const secondReply = parseJsonReply(second.stdout)
-      if (!secondReply || secondReply.status !== 'SUCCESS' || !/PONG/i.test(String(secondReply.response ?? ''))) {
-        report('e2e follow-up', `unexpected reply: code=${String(second.code)} status=${String(secondReply?.status)} response=${JSON.stringify(secondReply?.response)} stderr=${second.stderr.trim().slice(0, 300)}`)
-      } else {
-        pass('follow-up resumed the same conversation and remembered PONG')
-      }
-    } else {
-      report('e2e follow-up', 'round 1 carried no conversation_id (json mode not available?)')
-    }
+    report(
+      'e2e suite',
+      `exit=${String(suite.code)} stdout=${String(suite.stdout ?? '').trim().slice(-1200)} stderr=${String(suite.stderr ?? '').trim().slice(-600)}`,
+    )
   }
 } else if (E2E) {
   report('e2e', 'skipped: no agy executable')
 } else {
-  console.log('\n(offline checks only — rerun with --e2e for a live PONG round trip)')
+  console.log('\n(offline checks only — rerun with --e2e for the live plugin suite)')
 }
 
 console.log(failures === 0 ? '\nAll checks passed.' : `\n${failures} check(s) failed.`)
