@@ -5,7 +5,13 @@ Gemini-powered coding agent on your machine — straight from DeepSeek Harness.
 **No Gemini API key is involved**: agy authenticates through your Antigravity
 login (system keyring / Google Sign-In).
 
-> 中文版见 [README.zh.md](README.zh.md) · Source: [github.com/ZEM17/dsh-subagent-agy](https://github.com/ZEM17/dsh-subagent-agy)
+> 中文版见 [README.zh.md](README.zh.md) · Source: [github.com/mojingjing-git/dsh-subagent-agy](https://github.com/mojingjing-git/dsh-subagent-agy)
+>
+> **This is a fork.** Upstream is [ZEM17/dsh-subagent-agy](https://github.com/ZEM17/dsh-subagent-agy)
+> by ZEM17 (`@dsh-external/dsh-subagent-antigravity@0.2.0`, MIT). This fork adds
+> DSH 0.2.1-rc.2 compatibility, per-run transcripts, agy 1.4.x support and the
+> test suites described below — see [PATCH.md](PATCH.md) for every change and why.
+> Version `0.2.0-patched.5`.
 
 ---
 
@@ -27,12 +33,12 @@ login (system keyring / Google Sign-In).
 **From GitHub** (recommended):
 
 ```bash
-dsh plugin --profile web add github:ZEM17/dsh-subagent-agy
+dsh plugin --profile web add github:mojingjing-git/dsh-subagent-agy
 ```
 
 **From a tarball**: download
 `dsh-external-dsh-subagent-antigravity-0.2.0.tgz` from the
-[releases page](https://github.com/ZEM17/dsh-subagent-agy/releases), then:
+[releases page](https://github.com/mojingjing-git/dsh-subagent-agy/releases), then:
 
 ```bash
 dsh plugin --profile web add /path/to/dsh-external-dsh-subagent-antigravity-0.1.0.tgz

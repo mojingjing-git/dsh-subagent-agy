@@ -1,0 +1,37 @@
+name: ci
+
+on:
+  push:
+    branches: [main]
+  pull_request:
+  workflow_dispatch:
+
+jobs:
+  test:
+    name: typecheck + offline suite
+    runs-on: ${{ matrix.os }}
+    strategy:
+      fail-fast: false
+      matrix:
+        # Windows is not optional here: the plugin spawns agy through cmd.exe
+        # and its process-tree termination path is Windows-specific.
+        os: [windows-latest, ubuntu-latest]
+        node: [22, 24]
+    steps:
+      - uses: actions/checkout@v4
+
+      - uses: actions/setup-node@v4
+        with:
+          node-version: ${{ matrix.node }}
+
+      - name: Install dev dependencies
+        # No install of the deepseek-ai peers: they are injected by the DSH
+        # host at runtime and are not on the public registry. The offline suite
+        # drives the plugin through a stub context instead.
+        run: npm install --no-audit --no-fund --ignore-scripts
+
+      - name: Build (tsc → lib/)
+        run: npx tsc -p tsconfig.json
+
+      - name: Offline suite
+        run: node test/run.mjs

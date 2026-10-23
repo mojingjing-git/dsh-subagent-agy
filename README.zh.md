@@ -4,7 +4,12 @@
 Gemini 编程智能体——从 DeepSeek Harness 里直接使用。**不需要任何 API key**：
 agy 使用你的 Antigravity 登录态（系统凭据 / Google 登录）完成认证。
 
-> English version: [README.md](README.md) · 源码: [github.com/ZEM17/dsh-subagent-agy](https://github.com/ZEM17/dsh-subagent-agy)
+> English version: [README.md](README.md) · 源码: [github.com/mojingjing-git/dsh-subagent-agy](https://github.com/mojingjing-git/dsh-subagent-agy)
+>
+> **本项目是 fork。** 上游是 ZEM17 的 [ZEM17/dsh-subagent-agy](https://github.com/ZEM17/dsh-subagent-agy)
+> （`@dsh-external/dsh-subagent-antigravity@0.2.0`，MIT）。本 fork 增加了 DSH
+> 0.2.1-rc.2 兼容、每次运行的完整轨迹、agy 1.4.x 支持，以及下方描述的测试套件——
+> 全部改动及原因见 [PATCH.md](PATCH.md)。当前版本 `0.2.0-patched.5`。
 
 ---
 
@@ -25,11 +30,11 @@ agy 使用你的 Antigravity 登录态（系统凭据 / Google 登录）完成�
 **从 GitHub 安装**（推荐）：
 
 ```bash
-dsh plugin --profile web add github:ZEM17/dsh-subagent-agy
+dsh plugin --profile web add github:mojingjing-git/dsh-subagent-agy
 ```
 
 **从安装包安装**：到
-[Releases 页面](https://github.com/ZEM17/dsh-subagent-agy/releases) 下载
+[Releases 页面](https://github.com/mojingjing-git/dsh-subagent-agy/releases) 下载
 `dsh-external-dsh-subagent-antigravity-0.2.0.tgz`，然后：
 
 ```bash
