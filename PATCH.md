@@ -12,7 +12,25 @@ against the installed `agy`).
 
 The package name (`@dsh-external/dsh-subagent-antigravity`) and the Cordis mount
 id (`dsh-subagent-antigravity`) never change, so this build drops in where the
-upstream release was. Version: `0.2.0-patched.5`.
+upstream release was. Version: `0.2.0-patched.7`.
+
+## v7 — the tool descriptions say "sub-agent", not just "antigravity"
+
+Reported symptom: asked to create an agent, or to dispatch work to another
+agent, the model did not think of this plugin. The cause is discoverability, not
+behaviour — the tool name `antigravity` is a noun with no literal link to the
+action "create a sub-agent", and the only other candidates in view are the
+built-in `subagent` / `subagent_fork`, so the plugin was skipped.
+
+The descriptions now open with the action (`Create a delegated sub-agent
+task`), list the phrasings users actually use (dispatch / delegate / launch /
+spin up / hand off / 派个 agent / 委托给别的模型 / 让 agy 干), name the package and
+the mount id so a search for either one hits, say plainly that this is a tool
+and not a skill, and spell out how it differs from the built-in `subagent`
+(a local child in this same process that inherits the conversation) and from
+`antigravity_followup` (the only way back to an already-dispatched agy task).
+
+Only `description` text changed — no tool name, no parameter, no return shape.
 
 ## v1 — DSH compatibility (required)
 
