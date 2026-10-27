@@ -18,7 +18,7 @@
 // So: probe for a real peer declaration, then build accordingly. Same output
 // either way — the shim only adds type information, it emits nothing.
 import { spawnSync } from 'node:child_process'
-import { copyFileSync, existsSync, mkdirSync, readFileSync } from 'node:fs'
+import { copyFileSync, existsSync, mkdirSync, readFileSync, rmSync } from 'node:fs'
 import { createRequire } from 'node:module'
 import { dirname, join, resolve } from 'node:path'
 import { fileURLToPath } from 'node:url'
@@ -71,6 +71,21 @@ process.stdout.write(
     (real ? ' (no shim)' : ' (with src/peers.d.ts shim)') +
     '\n',
 )
+
+// tsc never deletes: rename a module under src/ and its old lib/*.js (and
+// lib/types/*.d.ts, .map) would survive every rebuild and ship in the tarball.
+// Wipe lib/ before emitting so the output is exactly what src/ produces now.
+// On Windows a concurrent reader can hold a handle (EBUSY/EPERM); rmSync
+// retries those on its own before we report and stop.
+const libDir = join(root, 'lib')
+if (existsSync(libDir)) {
+  try {
+    rmSync(libDir, { recursive: true, force: true, maxRetries: 5, retryDelay: 100 })
+  } catch (error) {
+    process.stderr.write(`build: could not clear lib/ — ${String(error)}\n`)
+    process.exit(1)
+  }
+}
 
 // Prefer the repo's own typescript so the version is pinned, like the build did.
 const tscBin = join(root, 'node_modules', 'typescript', 'bin', 'tsc')
