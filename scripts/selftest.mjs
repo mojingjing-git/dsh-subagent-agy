@@ -84,11 +84,19 @@ if (agy) {
   const probe = await run([agy, 'help'])
   const text = probe.stdout + probe.stderr
   const has = (flag) => new RegExp(`--${flag}(?:\\s|=)`).test(text)
-  for (const flag of ['output-format', 'conversation', 'sandbox', 'prompt-file', 'print-timeout']) {
+  // The plugin probes agy's help at startup and adapts its argv, so a missing
+  // optional flag is a supported configuration, not a broken install. Only the
+  // flags whose absence degrades a core path (followups, the run watchdog)
+  // fail the self-test.
+  const essential = ['conversation', 'print-timeout']
+  for (const flag of [...essential, 'output-format', 'sandbox', 'prompt-file']) {
     const supported = has(flag)
     if (supported) pass(`--${flag} supported`)
-    else if (flag === 'prompt-file') pass('--prompt-file absent (expected on current agy)')
-    else report(`--${flag} supported`, 'flag not listed in agy help — the plugin will adapt, but verify the installed version')
+    else if (essential.includes(flag)) {
+      report(`--${flag} supported`, 'flag not listed in agy help — followups/the run watchdog degrade without it')
+    } else {
+      pass(`--${flag} absent (optional — the plugin probes and adapts)`)
+    }
   }
   if (probe.timedOut) report('flag probe', 'agy help hung')
 
