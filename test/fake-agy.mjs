@@ -62,6 +62,19 @@ if (timeoutFlagIndex !== -1 && argv[timeoutFlagIndex + 1] !== undefined) {
 // `agy help`: the usage dump the capability probe parses. Kept faithful to the
 // real 1.4.6 output for every flag the plugin cares about.
 if (argv.includes('help')) {
+  // FAKE_AGY_MINIMAL_HELP=1 models an old build whose help never mentions
+  // --print/--conversation/stream-json: the probe parses the usage but cannot
+  // confirm those capabilities (probed=false, streamJson=false).
+  if (process.env.FAKE_AGY_MINIMAL_HELP === '1') {
+    process.stdout.write(`Antigravity CLI 1.0.0 (fake)
+
+Usage: agy [flags]
+  --print-timeout                 Optional time limit for print mode (default 0s)
+  --model                         Model for the current CLI session
+  -h, --help                      help for agy
+`)
+    process.exit(0)
+  }
   process.stdout.write(`Antigravity CLI 1.4.6 (fake)
 
 Usage: agy [flags]

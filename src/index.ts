@@ -827,6 +827,17 @@ function isAuthError(detail: string): boolean {
   return /authentication required|not logged in|please (log|sign) in|login required|unauthenticated/i.test(detail)
 }
 
+/**
+ * One stream-mode rule for both executors: stream only when the probe
+ * CONFIRMED stream-json, otherwise plain json. The background path used a
+ * looser `streamJson || !probed` guess, so one installed build could get two
+ * different protocols depending on which executor picked it; the background
+ * parser already falls back to a bare json reply, so strict is safe there too.
+ */
+function resolveStreamMode(support: AgyFlagSupport): 'stream-json' | 'json' {
+  return support.streamJson === true ? 'stream-json' : 'json'
+}
+
 /** Append an actionable authentication hint when the detail smells like a missing login. */
 function authHintFor(detail: string): string {
   if (!isAuthError(detail)) return detail
@@ -1530,7 +1541,7 @@ class AntigravitySubagentProvider implements SubagentProvider {
       exe,
       support,
       jsonMode,
-      streamMode: jsonMode && (support.streamJson || !support.probed),
+      streamMode: jsonMode && resolveStreamMode(support) === 'stream-json',
       baseArgv,
       promptFilePath,
       releasePromptFile,
@@ -1641,7 +1652,7 @@ class AntigravitySubagentProvider implements SubagentProvider {
       // response and hides every intermediate step; stream-json is what makes a
       // complete transcript possible. The strict `=== true` keeps an unprobed
       // build on the format upstream has always used.
-      if (jsonModeArg) argv.push('--output-format', plan.support.streamJson === true ? 'stream-json' : 'json')
+      if (jsonModeArg) argv.push('--output-format', resolveStreamMode(plan.support))
       if (conversationId !== undefined) argv.push('--conversation', conversationId)
       const handle = ctx.subprocess.spawn({
         argv,

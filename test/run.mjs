@@ -368,6 +368,34 @@ await testCase('probe/caches-and-reuses', { scenario: 'success' }, async (ctl) =
   check('probe detects stream-json support', support.streamJson === true, JSON.stringify(support))
 })
 
+await testCase('flags/stream-mode-agrees-across-executors', { scenario: 'success', config: { model: 'gemini-3.8-flash-high' } }, async (ctl) => {
+  // A build whose help cannot confirm stream-json (minimal usage → probed=false,
+  // streamJson=false). Both executors must then fall back to plain `json`; the
+  // background path used to guess `streamJson || !probed` and pick stream-json
+  // while the foreground stayed strict — one build, two different protocols.
+  process.env.FAKE_AGY_MINIMAL_HELP = '1'
+  try {
+    const outputFormatOf = (h) => {
+      const i = h.argv.indexOf('--output-format')
+      return i === -1 ? undefined : h.argv[i + 1]
+    }
+    await ctl.callTool('antigravity', { description: 'foreground', prompt: 'Reply with exactly: PONG' })
+    const foregroundFormats = ctl.subprocess.spawned.filter((h) => h.argv.includes('--model')).map(outputFormatOf)
+    check('the foreground run falls back to plain json when unprobed', foregroundFormats.length >= 1 && foregroundFormats.every((f) => f === 'json'), foregroundFormats.join(', '))
+    await ctl.callTool('antigravity', { description: 'background', prompt: 'Reply with exactly: PONG', background: true })
+    const deadline = Date.now() + 15_000
+    for (;;) {
+      if (ctl.subprocess.spawned.filter((h) => h.argv.includes('--model')).length >= 2) break
+      if (Date.now() > deadline) throw new Error('the background run never spawned')
+      await new Promise((r) => setTimeout(r, 50))
+    }
+    const allFormats = ctl.subprocess.spawned.filter((h) => h.argv.includes('--model')).map(outputFormatOf)
+    check('the background run picks the same fallback', allFormats.length >= 2 && allFormats.every((f) => f === 'json'), allFormats.join(', '))
+  } finally {
+    delete process.env.FAKE_AGY_MINIMAL_HELP
+  }
+})
+
 await testCase('probe/bare-timeout-build-downgrades', { scenario: 'success', config: { flagCachePath: '' } }, async (ctl) => {
   // A pre-1.4 build takes a bare millisecond count. The probe must find that
   // too, rather than hard-failing every run on the modern spelling.
