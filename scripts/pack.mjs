@@ -11,18 +11,26 @@
  * emitted before their contents, and every header carries a fixed mtime and
  * mode.
  *
- * Usage: node scripts/pack.mjs <projectRoot> <outputTgz>
+ * Usage: node scripts/pack.mjs [<projectRoot> [<outputTgz>]]
+ *
+ * Both arguments are optional: the root defaults to the repository this script
+ * lives in, and the output defaults to dist/<tarball name>.tgz so a bare
+ * `node scripts/pack.mjs` produces the artifact instead of a usage error.
  */
 import { createHash } from 'node:crypto'
-import { readdirSync, readFileSync, statSync, writeFileSync } from 'node:fs'
-import { join, relative, sep } from 'node:path'
+import { existsSync, mkdirSync, readdirSync, readFileSync, statSync, writeFileSync } from 'node:fs'
+import { join, relative, resolve, sep } from 'node:path'
 import { gzipSync } from 'node:zlib'
+import { fileURLToPath } from 'node:url'
 
-const [root, out] = process.argv.slice(2)
-if (!root || !out) {
-  console.error('usage: node scripts/pack.mjs <projectRoot> <outputTgz>')
+const root = process.argv[2] ? resolve(process.argv[2]) : fileURLToPath(new URL('..', import.meta.url))
+if (!existsSync(join(root, 'package.json'))) {
+  console.error(`usage: node scripts/pack.mjs [<projectRoot> [<outputTgz>]] — no package.json under ${root}`)
   process.exit(2)
 }
+const pkg = JSON.parse(readFileSync(join(root, 'package.json'), 'utf8'))
+const out = process.argv[3] ?? join(root, 'dist', `dsh-external-dsh-subagent-antigravity-${pkg.version}.tgz`)
+mkdirSync(join(out, '..'), { recursive: true })
 
 /** Files and directories to ship, matching package.json "files". */
 const INCLUDE = [
