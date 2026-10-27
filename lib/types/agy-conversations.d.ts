@@ -32,6 +32,13 @@ export interface ListConversationsOptions {
     summaries?: ReadonlyMap<string, ConversationSummary>;
     limit?: number;
 }
+/**
+ * Conversation ids reach `join(dir, `${id}.db`)` below. Registry entries and
+ * summaries are data, not trusted paths — accept only the id shape agy writes
+ * (hex + dashes, as in the UUIDs history.ts already enforces) so `../x` can
+ * never climb out of the data directory.
+ */
+export declare function isSafeConversationId(id: string): boolean;
 /** Last `gemini-*` id appearing in the conversation database. */
 export declare function lastModelIn(buffer: Buffer): string | null;
 /** Model id recorded inside `<conversationId>.db`, cached by mtime. */

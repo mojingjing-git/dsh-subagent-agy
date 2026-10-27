@@ -58,6 +58,16 @@ export interface ListConversationsOptions {
 const MODEL_RE = /gemini-[0-9][\w.-]*/g
 const MODEL_CACHE = new Map<string, { mtimeMs: number; model: string | null }>()
 
+/**
+ * Conversation ids reach `join(dir, `${id}.db`)` below. Registry entries and
+ * summaries are data, not trusted paths — accept only the id shape agy writes
+ * (hex + dashes, as in the UUIDs history.ts already enforces) so `../x` can
+ * never climb out of the data directory.
+ */
+export function isSafeConversationId(id: string): boolean {
+  return /^[0-9a-fA-F-]{8,64}$/.test(id)
+}
+
 /** Last `gemini-*` id appearing in the conversation database. */
 export function lastModelIn(buffer: Buffer): string | null {
   let last: string | null = null
@@ -68,6 +78,7 @@ export function lastModelIn(buffer: Buffer): string | null {
 
 /** Model id recorded inside `<conversationId>.db`, cached by mtime. */
 export function modelFromDb(conversationsDir: string, conversationId: string): string | null {
+  if (!isSafeConversationId(conversationId)) return null
   const file = join(conversationsDir, `${conversationId}.db`)
   try {
     const mtimeMs = statSync(file).mtimeMs
@@ -83,6 +94,7 @@ export function modelFromDb(conversationsDir: string, conversationId: string): s
 
 /** `title:"…"` from the per-conversation annotation file, if any. */
 export function titleFromAnnotations(annotationsDir: string, conversationId: string): string | null {
+  if (!isSafeConversationId(conversationId)) return null
   try {
     const text = readFileSync(join(annotationsDir, `${conversationId}.pbtxt`), 'utf8')
     const match = /title\s*:\s*"((?:[^"\\]|\\.)*)"/.exec(text)
@@ -109,6 +121,7 @@ export function listConversations(options: ListConversationsOptions): Conversati
   for (const [key, record] of Object.entries(options.records)) {
     const conversationId = record.conversationId
     if (hidden.has(key) || hidden.has(conversationId)) continue
+    if (!isSafeConversationId(conversationId)) continue
     // Admission test: a real agy conversation has a database on disk.
     if (!existsSync(join(options.conversationsDir, `${conversationId}.db`))) continue
 

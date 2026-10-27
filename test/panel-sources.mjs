@@ -12,7 +12,7 @@ import { mkdirSync, mkdtempSync, rmSync, writeFileSync } from 'node:fs'
 import { tmpdir } from 'node:os'
 import { join } from 'node:path'
 import { UsageReader, parseUsage, familyOfModel, pickBadge, GEMINI_FAMILY, FIVE_HOUR } from '../lib/agy-usage.js'
-import { listConversations, lastModelIn, titleFromAnnotations } from '../lib/agy-conversations.js'
+import { listConversations, lastModelIn, modelFromDb, titleFromAnnotations, isSafeConversationId } from '../lib/agy-conversations.js'
 
 const SAMPLES = [
   'Gemini Models\tWeekly Limit Remaining\t80%\t2026-10-29T10:17:27Z',
@@ -174,11 +174,39 @@ try {
   const olderId = '73833e31-aaaa-bbbb-cccc-000000000002'
   writeFileSync(join(conversationsDir, `${olderId}.db`), '{"model":"gemini-3.8-flash-high"}', 'latin1')
 
+  // A hostile registry id must not reach the filesystem: `../escaped` resolves
+  // one level above conversationsDir. The fixture sits there to prove the
+  // guard, not to hope the path happens to be empty.
+  writeFileSync(join(geminiDir, 'escaped.db'), '{"model":"gemini-3.8-flash-high"}', 'latin1')
+  writeFileSync(join(geminiDir, 'escaped.pbtxt'), 'title:"escaped"\n')
+
   check('last occurrence wins over the frequent helper model', () => {
     assert.equal(lastModelIn(Buffer.from('gemini-3.8-flash-n '.repeat(5) + 'gemini-3.8-flash-high')), 'gemini-3.8-flash-high')
   })
   check('annotation title is unescaped', () => {
     assert.equal(titleFromAnnotations(annotationsDir, realId), '注释标题')
+  })
+
+  check('conversation ids are validated before they touch a path', () => {
+    assert.equal(isSafeConversationId(realId), true)
+    assert.equal(isSafeConversationId('../escaped'), false)
+    assert.equal(isSafeConversationId('has space'), false)
+    assert.equal(isSafeConversationId(''), false)
+  })
+
+  check('a hostile conversation id cannot escape the data directory', () => {
+    assert.equal(modelFromDb(conversationsDir, '../escaped'), null)
+    assert.equal(modelFromDb(conversationsDir, 'has space'), null)
+    assert.equal(titleFromAnnotations(annotationsDir, '../escaped'), null)
+    const items = listConversations({
+      records: {
+        'session-x::agy::1': { conversationId: '../escaped', cwd: projectDir, label: 'x', createdAt: 5 },
+        'session-y::agy::1': { conversationId: 'has space', cwd: projectDir, label: 'y', createdAt: 6 },
+      },
+      conversationsDir,
+      annotationsDir,
+    })
+    assert.equal(items.length, 0)
   })
 
   check('fake registry rows are dropped, real ones de-duplicated', () => {
