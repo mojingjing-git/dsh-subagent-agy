@@ -9,7 +9,7 @@
  * 就只能靠真实数据碰运气。
  */
 import assert from 'node:assert/strict'
-import { mkdtempSync, rmSync } from 'node:fs'
+import { mkdirSync, mkdtempSync, readdirSync, rmSync } from 'node:fs'
 import { tmpdir } from 'node:os'
 import { join } from 'node:path'
 import { DatabaseSync } from 'node:sqlite'
@@ -115,6 +115,20 @@ try {
     const missing = await readConversationHistory('99999999-8888-7777-6666-555555555555', dir)
     assert.equal(missing.source, 'missing')
     assert.deepEqual(missing.steps, [])
+  })
+
+  // A copy that dies between "temp dir created" and "database opened" must
+  // clean up after itself — the temp dir lives in the user's real tmpdir and
+  // every leaked copy is 1–3 MB of conversation database nobody will free.
+  await check('a failed database copy leaves no temp dir behind', async () => {
+    const leaked = () => readdirSync(tmpdir()).filter((name) => name.startsWith('agy-history-'))
+    const before = leaked()
+    const blockedId = 'aaaaaaaa-0000-4000-8000-00000000000a'
+    mkdirSync(join(dir, `${blockedId}.db`)) // a directory: readOnly open fails, the copy dies on EISDIR
+    const result = await readConversationHistory(blockedId, dir)
+    assert.equal(result.source, 'unreadable')
+    const after = leaked()
+    assert.deepEqual(after, before, JSON.stringify(after.filter((name) => !before.includes(name))))
   })
 } finally {
   rmSync(dir, { recursive: true, force: true })

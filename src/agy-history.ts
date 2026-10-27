@@ -350,22 +350,27 @@ async function openDatabase(path: string): Promise<{ db: SqliteDatabase; cleanup
   } catch {
     // 2. agy is running and holds a write lock — work on a copy instead.
   }
+  let dir: string | null = null
   try {
-    const dir = mkdtempSync(join(tmpdir(), 'agy-history-'))
+    dir = mkdtempSync(join(tmpdir(), 'agy-history-'))
     const copy = join(dir, 'conversation.db')
     copyFileSync(path, copy)
     for (const suffix of ['-wal', '-shm']) {
       if (existsSync(path + suffix)) copyFileSync(path + suffix, copy + suffix)
     }
     const db = new sqlite.DatabaseSync(copy)
+    const tempDir = dir
     return {
       db,
       cleanup: () => {
         try { db.close() } catch { /* already closed */ }
-        try { rmSync(dir, { recursive: true, force: true }) } catch { /* best effort */ }
+        try { rmSync(tempDir, { recursive: true, force: true }) } catch { /* best effort */ }
       },
     }
   } catch {
+    // The copy never became a database — remove the temp dir instead of
+    // stranding a full conversation copy in the user's tmpdir.
+    if (dir !== null) { try { rmSync(dir, { recursive: true, force: true }) } catch { /* best effort */ } }
     return null
   }
 }
