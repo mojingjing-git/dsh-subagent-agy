@@ -11,6 +11,7 @@ import { bootPlugin, cleanup, homeTranscriptDir, readIfExists, scratch } from '.
 
 const filter = process.argv[2]
 const results = []
+let casesMatched = 0
 
 /** One assertion: record pass/fail instead of throwing out of the case. */
 function check(name, condition, detail) {
@@ -36,6 +37,7 @@ function check(name, condition, detail) {
  */
 async function testCase(name, options, body) {
   if (filter !== undefined && !name.includes(filter)) return
+  casesMatched += 1
   const workdir = scratch(`agy-${name.replace(/[^a-z0-9]+/gi, '-')}-`)
   const transcriptDir = join(workdir, 'transcripts')
   const previousScenario = process.env.FAKE_AGY_SCENARIO
@@ -529,6 +531,12 @@ await testCase('schema/undeclared-field-is-rejected', { scenario: 'success' }, a
 // ── Summary ─────────────────────────────────────────────────────────────────
 const failed = results.filter((r) => !r.ok)
 console.log(`\n${results.length - failed.length}/${results.length} assertions passed`)
+if (filter !== undefined && casesMatched === 0) {
+  // A filter that matches nothing must not read as a green run (0/0 would
+  // also slip through wrappers that compare the two numbers for equality).
+  console.log(`no tests matched filter: ${filter}`)
+  process.exitCode = 1
+}
 if (failed.length > 0) {
   console.log('\nfailures:')
   for (const f of failed) console.log(`  - ${f.name}: ${f.detail ?? ''}`)
