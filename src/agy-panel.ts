@@ -350,7 +350,9 @@ function readPrefs(path: string): { hidden: string[] } {
 
 function writePrefs(path: string, prefs: { hidden: string[] }): void {
   mkdirSync(dirname(path), { recursive: true })
-  const temp = `${path}.tmp`
+  // A per-process temp name: two writers sharing one `${path}.tmp` would
+  // interleave (A writes, B overwrites, A renames B's bytes into place).
+  const temp = `${path}.${process.pid}.tmp`
   writeFileSync(temp, JSON.stringify(prefs), 'utf8')
   renameSync(temp, path)
 }

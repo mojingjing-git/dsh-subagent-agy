@@ -9,7 +9,7 @@
  * isolation. The real agy path is exercised by S3 against the CLI.
  */
 import assert from 'node:assert/strict'
-import { mkdtempSync, mkdirSync, rmSync, writeFileSync, readFileSync } from 'node:fs'
+import { mkdtempSync, mkdirSync, readdirSync, rmSync, writeFileSync, readFileSync } from 'node:fs'
 import { tmpdir } from 'node:os'
 import { join } from 'node:path'
 import { Readable } from 'node:stream'
@@ -312,6 +312,25 @@ try {
     const shown = await call('/api-agy/prefs', { show: conversationId })
     assert.deepEqual(shown.json.hidden, [])
     assert.equal(JSON.parse(readFileSync(join(scratch, 'panel.json'), 'utf8')).hidden.length, 0)
+    assert.ok(!readdirSync(scratch).includes('panel.json.tmp'), 'a completed write leaves no temp behind')
+  })
+
+  // Two processes writing the same cache with one fixed `${path}.tmp` name
+  // interleave: A writes it, B overwrites it, A renames B's bytes into place.
+  // The pid-suffixed name keeps each writer's temp its own; these checks pin
+  // the name shape by stranding a temp through a failed rename.
+  await check('a failed usage-cache write strands no fixed-name temp', async () => {
+    const blockedDir = join(scratch, 'usage-blocked')
+    mkdirSync(join(blockedDir, 'cache.json'), { recursive: true })
+    const reader = new UsageReader({ runner: async () => SAMPLES, cachePath: join(blockedDir, 'cache.json'), badgeFamily: GEMINI_FAMILY })
+    await reader.read(true)
+    assert.ok(!readdirSync(blockedDir).includes('cache.json.tmp'), JSON.stringify(readdirSync(blockedDir)))
+  })
+
+  await check('a failed prefs write strands no fixed-name temp either', async () => {
+    mkdirSync(join(scratch, 'blocked-prefs.json'), { recursive: true })
+    await call('/api-agy/prefs', { hide: conversationId })
+    assert.ok(!readdirSync(scratch).includes('blocked-prefs.json.tmp'))
   })
 } finally {
   resolveDone?.({ status: 'completed', detail: 'completed' })

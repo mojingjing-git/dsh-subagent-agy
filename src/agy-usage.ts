@@ -207,7 +207,9 @@ export class UsageReader {
   private writeCache(report: UsageReport): void {
     try {
       mkdirSync(dirname(this.cachePath), { recursive: true })
-      const temp = `${this.cachePath}.tmp`
+      // A per-process temp name: two writers sharing one `${path}.tmp` would
+      // interleave (A writes, B overwrites, A renames B's bytes into place).
+      const temp = `${this.cachePath}.${process.pid}.tmp`
       const snapshot: CachedSnapshot = { rows: report.rows, fetchedAt: report.fetchedAt }
       writeFileSync(temp, JSON.stringify(snapshot), 'utf8')
       renameSync(temp, this.cachePath)
