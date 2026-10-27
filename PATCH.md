@@ -7,12 +7,45 @@ This fork (`mojingjing-git/dsh-subagent-agy`) carries the patches below.
 The patches now live in **TypeScript source** (`src/index.ts`), not hand-edited
 into the compiled bundle: the fork ships the source, a `tsc` build
 (`npm run build`), an offline suite (`test/run.mjs`, 93 assertions against a
-simulated agy), five panel suites (`npm run test:panel`, 39 assertions) and an
+simulated agy), seven panel suites (`npm run test:panel`, 54 assertions) and an
 end-to-end suite (`test/e2e-real.mjs`, 13 assertions against the installed `agy`).
 
 The package name (`@dsh-external/dsh-subagent-antigravity`) and the Cordis mount
 id (`dsh-subagent-antigravity`) never change, so this build drops in where the
-upstream release was. Version: `0.2.0-patched.11`.
+upstream release was. Version: `0.2.0-patched.12`.
+
+## v12 — the panel shows what the model actually did
+
+The panel used to stop at the conversation title: opening it showed a list of
+titles, and neither the steps of a finished conversation nor the steps of a
+running one. Two causes, one in agy and one in this plugin:
+
+- agy writes a finished conversation to SQLite, not to the NDJSON stream the
+  live timeline listens to. The steps were on disk all along; nobody read them.
+- the client never asked for them.
+
+What v12 adds:
+
+- `src/agy-history.ts` reads
+  `~/.gemini/antigravity-cli/conversations/<conversation-id>.db`: the `steps`
+  table holds the ordered timeline (user input, model reply, tool call) and
+  `gen_metadata` holds the reply bodies in the order the replies happened. The
+  columns are protobuf blobs, so a generic wire-format walker extracts the
+  readable strings without knowing agy's schema.
+- `src/agy-summaries.ts` reads `conversation_summaries.db` for what the task
+  registry cannot know: the title, a preview, the step count, the last time the
+  conversation changed and agy's own state. Go's zero time (`0001-01-01 …`)
+  means "never" and stays empty.
+- the client loads `/api-agy/history` when a conversation is selected and
+  renders the timeline above the list — who said what, which tool was called
+  with which arguments — and refreshes it when a run ends.
+- the list rows now carry the last activity time, the step count and the
+  preview.
+
+Honesty about the data: agy does not keep the model reply for every
+conversation. Tool calls and prompts are always there, reply bodies only for
+some of them; where the body is missing the timeline says so instead of
+showing an empty bubble.
 
 ## v11 — `model: auto`: the deepest current model, resolved at startup
 

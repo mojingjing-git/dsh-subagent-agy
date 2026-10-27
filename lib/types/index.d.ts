@@ -57,6 +57,7 @@
 import type { Context } from '@deepseek-ai/cordis';
 import type { Agent } from '@deepseek-ai/dsh-agent';
 import type { ContentBlock } from '@deepseek-ai/dsh-llm';
+import { type StepEvent } from './agy-steps.js';
 export declare const name = "@dsh-external/dsh-subagent-antigravity";
 export declare const inject: string[];
 /** Register the `antigravity` job kind with the generic jobs registry (id prefix: `antigravity-N`). */
@@ -160,6 +161,12 @@ export interface AntigravityBackgroundHandle {
     readOutput: () => string;
     /** Last tool name agy reported for this run, when the stream carries one. */
     tool?: () => string | null;
+    /**
+     * The structured step timeline of this run: what agy did, in order, with
+     * which arguments and with which failure. Optional, so handles without a
+     * step stream (older builds, the offline test harness) keep working.
+     */
+    steps?: () => StepEvent[];
 }
 /** One in-flight run tracked for the tasks/cancel tool layer (foreground or background). */
 export interface ActiveRunInfo {

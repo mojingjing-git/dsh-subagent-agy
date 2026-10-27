@@ -73,6 +73,7 @@ import type { SessionId } from '@deepseek-ai/dsh-session'
 import type { Agent } from '@deepseek-ai/dsh-agent'
 import type { ContentBlock } from '@deepseek-ai/dsh-llm'
 import { dirname, isAbsolute, join } from 'node:path'
+import { mergeStepInto, parseStepUpdate, snapshotSteps, type StepEvent } from './agy-steps.js'
 import { homedir, tmpdir } from 'node:os'
 import { mkdirSync, readFileSync, renameSync, rmSync, statSync, writeFileSync } from 'node:fs'
 import { familyOfModel, spawnUsage, UsageReader } from './agy-usage.js'
@@ -926,6 +927,12 @@ export interface AntigravityBackgroundHandle {
   readOutput: () => string
   /** Last tool name agy reported for this run, when the stream carries one. */
   tool?: () => string | null
+  /**
+   * The structured step timeline of this run: what agy did, in order, with
+   * which arguments and with which failure. Optional, so handles without a
+   * step stream (older builds, the offline test harness) keep working.
+   */
+  steps?: () => StepEvent[]
 }
 
 /** One in-flight run tracked for the tasks/cancel tool layer (foreground or background). */
@@ -1855,6 +1862,12 @@ class AntigravitySubagentProvider implements SubagentProvider {
     let cancelledByRequest = false
     /** Last tool agy announced — the panel's "running tool" line. */
     let lastTool: string | null = null
+    /**
+     * The structured step timeline of this run, collected beside the visible
+     * text. The visible text stays byte-identical to what the plugin has
+     * always shown; these steps are a second view of the same events.
+     */
+    let steps: StepEvent[] = []
     const controller = new AbortController()
 
     /** Append to the live-output window, dropping the oldest bytes past MAX_VISIBLE_BYTES. */
@@ -1903,6 +1916,10 @@ class AntigravitySubagentProvider implements SubagentProvider {
       if (event === 'step_update') {
         const payload = (obj as { step_update?: unknown }).step_update
         if (payload !== null && typeof payload === 'object') {
+          // Side channel: collect the structured timeline without touching the
+          // visible output below, which must stay exactly as it always was.
+          const parsedStep = parseStepUpdate(payload)
+          if (parsedStep !== undefined) steps = mergeStepInto(steps, parsedStep)
           const p = payload as { text_delta?: unknown; state?: unknown; step_type?: unknown; tool_name?: unknown }
           if (typeof p.tool_name === 'string' && p.tool_name.length > 0) lastTool = p.tool_name
           const delta = p.text_delta
@@ -2041,7 +2058,7 @@ class AntigravitySubagentProvider implements SubagentProvider {
 
     // Track for the tasks/cancel tools; released when the job settles.
     this.trackActive(id, { label, cwd: plan.childCwd, startedAt: Date.now(), background: true, cancel }, done)
-    return { cancel, done, readOutput, tool: () => lastTool }
+    return { cancel, done, readOutput, tool: () => lastTool, steps: () => snapshotSteps(steps) }
   }
 }
 
@@ -2181,6 +2198,7 @@ export function apply(ctx: Context, config: Config): void {
     baseCwd: configuredCwd ?? process.cwd(),
     conversationsDir: join(antigravityHome, 'conversations'),
     annotationsDir: join(antigravityHome, 'annotations'),
+    summariesDbPath: join(antigravityHome, 'conversation_summaries.db'),
     prefsPath: join(pluginBaseDir(), 'agy-panel.json'),
     loadRecords: () => loadTaskRegistry(config, ctx.logger),
     listActive: () => provider.listActive(),
