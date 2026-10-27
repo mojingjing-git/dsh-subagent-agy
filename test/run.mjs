@@ -14,6 +14,17 @@ const results = []
 
 /** One assertion: record pass/fail instead of throwing out of the case. */
 function check(name, condition, detail) {
+  if (condition !== null && typeof condition === 'object' && typeof condition.then === 'function') {
+    // Boolean(promise) is always true, so an unawaited async assertion would
+    // silently pass. Count it as a permanent failure no matter how it settles.
+    const entry = { name, ok: false, detail: 'async assertion was not awaited — it cannot be counted' }
+    results.push(entry)
+    condition.then(
+      (value) => { entry.detail = `async assertion was not awaited (settled: ${value})` },
+      (error) => { entry.detail = `async assertion was not awaited (rejected: ${error})` },
+    )
+    return
+  }
   results.push({ name, ok: Boolean(condition), detail })
   if (!condition) throw new Error(`assertion failed: ${name}${detail === undefined ? '' : ` — ${detail}`}`)
 }

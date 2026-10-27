@@ -12,7 +12,10 @@ const { parseStepUpdate, mergeStep, mergeStepInto } = await import('../lib/agy-s
 
 let passed = 0
 const check = (name, fn) => {
-  fn()
+  const out = fn()
+  if (out !== null && typeof out === 'object' && typeof out.then === 'function') {
+    throw new Error(`async assertion passed to sync check() (unawaited): ${name}`)
+  }
   passed += 1
   console.log(`  ok  ${name}`)
 }

@@ -23,7 +23,10 @@ const host = readFileSync(join(root, 'src', 'agy-panel.ts'), 'utf8')
 
 const checks = []
 const check = (name, fn) => {
-  fn()
+  const out = fn()
+  if (out !== null && typeof out === 'object' && typeof out.then === 'function') {
+    throw new Error(`async assertion passed to sync check() (unawaited): ${name}`)
+  }
   checks.push(name)
 }
 

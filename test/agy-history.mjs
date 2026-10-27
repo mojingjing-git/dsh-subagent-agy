@@ -17,8 +17,8 @@ import { DatabaseSync } from 'node:sqlite'
 const { readConversationHistory, looksLikeModelName } = await import('../lib/agy-history.js')
 
 let passed = 0
-const check = (name, fn) => {
-  fn()
+const check = async (name, fn) => {
+  await fn()
   passed += 1
   console.log(`  ok  ${name}`)
 }
@@ -84,18 +84,18 @@ try {
 
   const history = await readConversationHistory(conversationId, dir)
 
-  check('the conversation comes back with its steps', () => {
+  await check('the conversation comes back with its steps', () => {
     assert.equal(history.source, 'database')
     assert.equal(history.stepCount, 3)
     assert.equal(history.steps.length, 3)
   })
 
-  check('the prompt is the text of the user_input step', () => {
+  await check('the prompt is the text of the user_input step', () => {
     assert.equal(history.steps[0].type, 'user_input')
     assert.equal(history.steps[0].text, 'Please clean up the leftovers.')
   })
 
-  check('the reply body comes from the step payload, not from gen_metadata', () => {
+  await check('the reply body comes from the step payload, not from gen_metadata', () => {
     assert.equal(history.steps[1].type, 'agent_response')
     assert.equal(
       history.steps[1].text,
@@ -104,14 +104,14 @@ try {
     assert.ok(!looksLikeModelName(history.steps[1].text))
   })
 
-  check('a tool step keeps its name, arguments and summary', () => {
+  await check('a tool step keeps its name, arguments and summary', () => {
     const step = history.steps[2]
     assert.equal(step.type, 'tool')
     assert.equal(step.state, 'DONE')
     assert.equal(step.tool.parameters.toolSummary, 'Inspect file start and line endings')
   })
 
-  check('a missing conversation yields an empty timeline instead of an error', async () => {
+  await check('a missing conversation yields an empty timeline instead of an error', async () => {
     const missing = await readConversationHistory('99999999-8888-7777-6666-555555555555', dir)
     assert.equal(missing.source, 'missing')
     assert.deepEqual(missing.steps, [])
@@ -120,7 +120,7 @@ try {
   rmSync(dir, { recursive: true, force: true })
 }
 
-check('looksLikeModelName recognises a model name and leaves prose alone', () => {
+await check('looksLikeModelName recognises a model name and leaves prose alone', () => {
   assert.equal(looksLikeModelName('Gemini 3.8 Flash (High)'), true)
   assert.equal(looksLikeModelName('claude sonnet 4'), true)
   assert.equal(looksLikeModelName(''), true)
