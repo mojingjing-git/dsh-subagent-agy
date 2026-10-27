@@ -848,7 +848,9 @@ function resolveStreamMode(support: AgyFlagSupport): 'stream-json' | 'json' {
 /** Append an actionable authentication hint when the detail smells like a missing login. */
 function authHintFor(detail: string): string {
   if (!isAuthError(detail)) return detail
-  return `${detail}\nHint: authenticate once by running \`agy\` interactively (agy → login), or set ANTIGRAVITY_API_KEY.`
+  // Real agy has no `login` subcommand and no API-key mechanism: the only way
+  // in is the browser OAuth flow that any interactive agy command starts.
+  return `${detail}\nHint: authenticate by running \`agy\` in a terminal and completing the browser sign-in it starts, then retry.`
 }
 
 /** Cooldown between automatic login-window launches (avoid popup storms). */

@@ -240,7 +240,13 @@ await testCase('auth-error/reports-auth', { scenario: 'auth-error' }, async (ctl
     threw = error
   }
   check('auth failure is surfaced', threw !== undefined)
-  check('auth wording is preserved', /authentication required/i.test(String(threw?.message ?? '')), String(threw?.message))
+  const message = String(threw?.message ?? '')
+  check('auth wording is preserved', /authentication required/i.test(message), message)
+  // Real agy v1.4.8 has no `login` subcommand and no API-key mechanism — a
+  // hint that names either sends the user chasing flags that do not exist.
+  check('the auth hint advertises no API key', !/ANTIGRAVITY_API_KEY/i.test(message), message)
+  check('the auth hint names no nonexistent subcommand', !/agy\s*→\s*login|agy login/i.test(message), message)
+  check('the auth hint points at the interactive sign-in', /sign-in|interactively/i.test(message), message)
 })
 
 // ── 6. Timeout + cancellation (the TDZ regression) ──────────────────────────
