@@ -214,6 +214,150 @@ window.__ModuleLoader__.load({
       )
     }
 
+    // ── history timeline ──────────────────────────────────────────────────────
+    const STEP_LABEL = {
+      user_input: '你',
+      agent_response: '模型',
+      tool: '工具',
+      system_message: '系统',
+    }
+
+    const stepAccent = (step) => {
+      if (step.state === 'ERROR') return C.danger
+      if (step.type === 'tool') return 'var(--dsw-alias-state-warning-primary, #f59e0b)'
+      if (step.type === 'agent_response') return C.accent
+      return C.dim
+    }
+
+    /** The arguments of a tool call, one per line. */
+    function ToolDetail({ tool }) {
+      if (!tool) return null
+      const parameters = tool.parameters && typeof tool.parameters === 'object' ? tool.parameters : null
+      const entries = parameters ? Object.entries(parameters) : []
+      return h(
+        'div',
+        { style: { marginTop: 3, fontSize: 10, color: C.dim } },
+        h('div', { style: { fontWeight: 600 } }, tool.name || '未知工具'),
+        tool.error ? h('div', { style: { color: C.danger } }, tool.error) : null,
+        entries.length > 0
+          ? h(
+              'pre',
+              {
+                style: {
+                  margin: '3px 0 0',
+                  whiteSpace: 'pre-wrap',
+                  wordBreak: 'break-word',
+                  fontSize: 10,
+                  lineHeight: 1.4,
+                  color: C.dim,
+                  fontFamily: 'ui-monospace, SFMono-Regular, Consolas, monospace',
+                },
+              },
+              entries
+                .map(([key, value]) => `${key}: ${typeof value === 'string' ? value : JSON.stringify(value)}`)
+                .join('\n'),
+            )
+          : null,
+      )
+    }
+
+    /** One step of the timeline. */
+    function StepRow({ step }) {
+      const label = STEP_LABEL[step.type] || step.type || '步骤'
+      const hasText = typeof step.text === 'string' && step.text.trim().length > 0
+      return h(
+        'div',
+        { style: { padding: '6px 0', borderBottom: `1px solid ${C.border}` } },
+        h(
+          'div',
+          { style: { display: 'flex', alignItems: 'center', gap: 6 } },
+          h('span', { style: { fontSize: 10, fontWeight: 600, color: stepAccent(step) } }, label),
+          step.state === 'ERROR' ? h('span', { style: { fontSize: 9, color: C.danger } }, '失败') : null,
+          step.state === 'ACTIVE' ? h('span', { style: { fontSize: 9, color: C.success } }, '进行中') : null,
+          h('span', { style: { marginLeft: 'auto', fontSize: 9, color: C.dimmer } }, `#${step.index}`),
+        ),
+        hasText
+          ? h(
+              'div',
+              {
+                style: {
+                  marginTop: 2,
+                  fontSize: 11,
+                  lineHeight: 1.5,
+                  color: C.text,
+                  whiteSpace: 'pre-wrap',
+                  wordBreak: 'break-word',
+                },
+              },
+              step.text,
+            )
+          : step.type === 'agent_response'
+            ? h(
+                'div',
+                { style: { marginTop: 2, fontSize: 10, color: C.dimmer, fontStyle: 'italic' } },
+                '（agy 没有保存这条回复的正文）',
+              )
+            : null,
+        h(ToolDetail, { tool: step.tool }),
+      )
+    }
+
+    /**
+     * The step timeline of the selected conversation.
+     *
+     * It answers the question the panel used to leave open: what did the model
+     * actually do — which prompt it got, which tools it called, what it replied.
+     */
+    function HistoryTimeline({ history, loading, error, onRefresh }) {
+      const steps = history && Array.isArray(history.steps) ? history.steps : []
+      const hidden = history && typeof history.stepCount === 'number' ? history.stepCount - steps.length : 0
+      return h(
+        'div',
+        { style: { fontSize: 11 } },
+        h(
+          'div',
+          { style: { display: 'flex', alignItems: 'center', gap: 6, marginBottom: 4 } },
+          h('span', { style: { fontSize: 12, fontWeight: 600, color: C.text } }, '步骤时间线'),
+          history
+            ? h('span', { style: { fontSize: 10, color: C.dim } }, `${steps.length} 步${hidden > 0 ? `（另有 ${hidden} 步未显示）` : ''}`)
+            : null,
+          h(
+            'button',
+            {
+              type: 'button',
+              title: '重新读取历史步骤',
+              onClick: onRefresh,
+              disabled: loading,
+              style: {
+                marginLeft: 'auto',
+                border: 'none',
+                background: 'transparent',
+                color: C.dim,
+                cursor: loading ? 'default' : 'pointer',
+                fontSize: 10,
+                opacity: loading ? 0.5 : 1,
+              },
+            },
+            loading ? '读取中…' : '刷新',
+          ),
+        ),
+        error !== null ? h('div', { style: { color: C.danger, fontSize: 10 } }, `读取失败：${error}`) : null,
+        loading && steps.length === 0
+          ? h('div', { style: { color: C.dimmer, fontSize: 11 } }, '正在读取历史步骤…')
+          : null,
+        !loading && steps.length === 0 && error === null
+          ? h(
+              'div',
+              { style: { color: C.dimmer, fontSize: 11 } },
+              history && history.source === 'missing'
+                ? '这个会话没有可读的数据库。'
+                : '这个会话没有记录步骤。',
+            )
+          : null,
+        steps.map((step) => h(StepRow, { key: step.index, step })),
+      )
+    }
+
     function ConversationRow({ item, selected, running, onSelect }) {
       return h(
         'button',
@@ -238,8 +382,9 @@ window.__ModuleLoader__.load({
           running ? h('span', { style: { color: C.success, fontSize: 9 } }, '●') : null,
           h('span', {
             style: { fontSize: 12, fontWeight: 500, flex: 1, overflow: 'hidden', textOverflow: 'ellipsis', whiteSpace: 'nowrap' },
+            title: item.preview || item.label || '',
           }, item.label || item.conversationId.slice(0, 8)),
-          h('span', { style: { fontSize: 10, color: C.dimmer, flex: 'none' } }, shortTime(item.createdAt)),
+          h('span', { style: { fontSize: 10, color: C.dimmer, flex: 'none' } }, shortTime(item.lastActivityAt || item.createdAt)),
         ),
         h(
           'div',
@@ -248,6 +393,9 @@ window.__ModuleLoader__.load({
             style: { fontSize: 10, color: C.dim, overflow: 'hidden', textOverflow: 'ellipsis', whiteSpace: 'nowrap', flex: 1 },
             title: item.cwd,
           }, item.cwdExists ? shortCwd(item.cwd) : `${shortCwd(item.cwd)}（目录不存在）`),
+          item.stepCount > 0
+            ? h('span', { style: { fontSize: 9, color: C.dimmer, flex: 'none' } }, `${item.stepCount} 步`)
+            : null,
           item.model
             ? h('span', {
               style: {
@@ -274,6 +422,9 @@ window.__ModuleLoader__.load({
       const [prompt, setPrompt] = useState('')
       const [run, setRun] = useState(null)
       const [sendError, setSendError] = useState(null)
+      const [history, setHistory] = useState(null)
+      const [historyLoading, setHistoryLoading] = useState(false)
+      const [historyError, setHistoryError] = useState(null)
       const cursorRef = useRef(0)
       const outputRef = useRef(null)
 
@@ -281,6 +432,26 @@ window.__ModuleLoader__.load({
         post('/conversations', {})
           .then((payload) => { setItems(payload.items || []); setListError(null) })
           .catch((error) => setListError(error.message))
+      }, [])
+
+      /** Read the step timeline of one conversation back from agy's database. */
+      const loadHistory = useCallback((conversationId) => {
+        setHistoryLoading(true)
+        setHistoryError(null)
+        post('/history', { conversationId })
+          .then((payload) => {
+            setHistory({
+              conversationId,
+              steps: Array.isArray(payload.steps) ? payload.steps : [],
+              stepCount: typeof payload.stepCount === 'number' ? payload.stepCount : 0,
+              source: payload.source,
+            })
+          })
+          .catch((error) => {
+            setHistory(null)
+            setHistoryError(error.message)
+          })
+          .finally(() => setHistoryLoading(false))
       }, [])
 
       const loadUsage = useCallback((force) => {
@@ -345,6 +516,13 @@ window.__ModuleLoader__.load({
         if (node !== null) node.scrollTop = node.scrollHeight
       }, [run === null ? '' : run.text])
 
+      // A finished run wrote new steps into agy's database — pull them in so
+      // the timeline shows what the run just did.
+      useEffect(() => {
+        if (run === null || run.status === 'running' || selected === null) return
+        loadHistory(selected)
+      }, [run === null ? null : run.status, selected, loadHistory])
+
       const busy = run !== null && run.status === 'running'
       const selectedItem = useMemo(
         () => items.find((item) => item.conversationId === selected) || null,
@@ -393,22 +571,48 @@ window.__ModuleLoader__.load({
 
         h(
           'div',
-          { style: { flex: 1, minHeight: 0, overflowY: 'auto', padding: '6px 0' } },
-          listError !== null
-            ? h('div', { style: { padding: 12, fontSize: 11, color: C.danger } }, `会话列表读取失败：${listError}`)
-            : items.length === 0
-              ? h('div', { style: { padding: 12, fontSize: 11, color: C.dimmer } }, '还没有经本插件运行过的会话。')
-              : items.map((item) => h(ConversationRow, {
-                key: item.conversationId,
-                item,
-                selected: item.conversationId === selected,
-                running: runningLabels.has(`${item.cwd}|${item.label}`),
-                onSelect: (id) => {
-                  setSelected(id)
-                  setRun(null)
-                  setSendError(null)
-                },
-              })),
+          { style: { flex: 1, minHeight: 0, display: 'flex', flexDirection: 'column' } },
+          selected === null
+            ? null
+            : h(
+                'div',
+                { style: { flex: 1, minHeight: 0, overflowY: 'auto', padding: '8px 10px 4px' } },
+                h(HistoryTimeline, {
+                  history: history !== null && history.conversationId === selected ? history : null,
+                  loading: historyLoading,
+                  error: historyError,
+                  onRefresh: () => loadHistory(selected),
+                }),
+              ),
+          h(
+            'div',
+            {
+              style: {
+                flex: selected === null ? 1 : 'none',
+                minHeight: 0,
+                maxHeight: selected === null ? undefined : 168,
+                overflowY: 'auto',
+                padding: '6px 0',
+                borderTop: selected === null ? 'none' : `1px solid ${C.border}`,
+              },
+            },
+            listError !== null
+              ? h('div', { style: { padding: 12, fontSize: 11, color: C.danger } }, `会话列表读取失败：${listError}`)
+              : items.length === 0
+                ? h('div', { style: { padding: 12, fontSize: 11, color: C.dimmer } }, '还没有经本插件运行过的会话。')
+                : items.map((item) => h(ConversationRow, {
+                  key: item.conversationId,
+                  item,
+                  selected: item.conversationId === selected,
+                  running: runningLabels.has(`${item.cwd}|${item.label}`),
+                  onSelect: (id) => {
+                    setSelected(id)
+                    setRun(null)
+                    setSendError(null)
+                    loadHistory(id)
+                  },
+                })),
+          ),
         ),
 
         h(

@@ -122,5 +122,15 @@ check('every client endpoint exists on the host', () => {
   }
 })
 
+check('selecting a conversation loads its step timeline', () => {
+  // The panel used to show nothing but the title: the client never asked for
+  // the history and never rendered a timeline.
+  assert.ok(source.includes("post('/history'"), 'the client never reads /history')
+  assert.ok(source.includes('HistoryTimeline'), 'the timeline component is missing')
+  assert.ok(source.includes('loadHistory(id)'), 'selecting a conversation does not load its history')
+  // The steps the timeline shows come from the history route.
+  assert.ok(host.includes("jsonRoute('/api-agy/history'"), 'the host has no history route')
+})
+
 for (const name of checks) console.log(`ok ${name}`)
 console.log(`\n${checks.length} checks passed`)
