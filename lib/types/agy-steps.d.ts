@@ -81,7 +81,10 @@ export declare function mergeStep(existing: StepEvent, incoming: StepEvent): Ste
  * Fold one event into an ordered step list.
  *
  * Steps keep the order agy gave them (by index), and a repeated index
- * updates the step in place instead of appending a second one.
+ * updates the step in place instead of appending a second one. The fold is
+ * the module's only state sink, so the bounded window lives here, not in the
+ * snapshot: without it a long run grows the array (and every payload built
+ * from it) without limit.
  */
 export declare function mergeStepInto(steps: readonly StepEvent[], incoming: StepEvent): StepEvent[];
 /**

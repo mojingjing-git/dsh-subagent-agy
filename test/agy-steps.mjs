@@ -8,7 +8,7 @@
  */
 import assert from 'node:assert/strict'
 
-const { parseStepUpdate, mergeStep, mergeStepInto } = await import('../lib/agy-steps.js')
+const { MAX_STEPS, parseStepUpdate, mergeStep, mergeStepInto, snapshotSteps } = await import('../lib/agy-steps.js')
 
 let passed = 0
 const check = (name, fn) => {
@@ -105,6 +105,41 @@ check('steps survive a malformed payload', () => {
   assert.doesNotThrow(() => parseStepUpdate(undefined))
   assert.doesNotThrow(() => parseStepUpdate({ step_index: 1, usage: 'not-a-number' }))
   assert.doesNotThrow(() => parseStepUpdate({ step_index: 1, tool_info: 'not-an-object' }))
+})
+
+// The fold helper is the module's state sink: a long run feeds it thousands of
+// step events. Without a bounded window the array (and every snapshot payload)
+// grows with the run; with an unguarded window the evicted oldest step would
+// resurrect whenever agy repeats its index, oscillating around the edge.
+const growWindow = (count) => {
+  let steps = []
+  for (let i = 0; i < count; i += 1) {
+    steps = mergeStepInto(steps, parseStepUpdate({ step_index: i, state: 'DONE', step_type: 'agent_response', text_delta: `s${i} ` }))
+  }
+  return steps
+}
+
+check('mergeStepInto keeps the fold bounded to MAX_STEPS', () => {
+  const steps = growWindow(250)
+  assert.equal(steps.length, MAX_STEPS, `steps.length=${steps.length}`)
+  assert.equal(steps[0].index, 250 - MAX_STEPS, `oldest kept index=${steps[0].index}`)
+  assert.ok(snapshotSteps(steps).length <= MAX_STEPS)
+})
+
+check('a step evicted from the window cannot resurrect', () => {
+  const steps = growWindow(250)
+  const after = mergeStepInto(steps, parseStepUpdate({ step_index: 0, state: 'DONE', step_type: 'agent_response', text_delta: 'back' }))
+  assert.equal(after.length, MAX_STEPS, `steps.length=${after.length}`)
+  assert.equal(after[0].index, 250 - MAX_STEPS, `oldest kept index=${after[0].index}`)
+  assert.equal(after.find((s) => s.index === 0), undefined)
+})
+
+check('a repeat of the oldest in-window step still updates in place', () => {
+  const steps = growWindow(250)
+  const after = mergeStepInto(steps, parseStepUpdate({ step_index: 250 - MAX_STEPS, state: 'DONE', step_type: 'agent_response', text_delta: 'more ' }))
+  assert.equal(after.length, MAX_STEPS)
+  assert.equal(after[0].index, 250 - MAX_STEPS)
+  assert.ok(after[0].text.includes('more '))
 })
 
 console.log(`\n${passed} checks passed`)
