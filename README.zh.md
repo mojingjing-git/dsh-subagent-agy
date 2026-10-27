@@ -10,8 +10,8 @@ agy 使用你的 Antigravity 登录态（系统凭据 / Google 登录）完成�
 >
 > **本项目是 fork。** 上游是 ZEM17 的 [ZEM17/dsh-subagent-agy](https://github.com/ZEM17/dsh-subagent-agy)
 > （`@dsh-external/dsh-subagent-antigravity@0.2.0`，MIT）。本 fork 增加了 DSH
-> 0.2.1-rc.2 兼容、每次运行的完整轨迹、agy 1.4.x 支持，以及下方描述的测试套件——
-> 全部改动及原因见 [PATCH.md](PATCH.md)。当前版本 `0.2.0-patched.6`。
+> 0.2.1-rc.2 兼容、每次运行的完整轨迹、agy 1.4.x 支持、侧边栏面板，以及下方描述的
+> 测试套件——全部改动及原因见 [PATCH.md](PATCH.md)。当前版本 `0.2.0-patched.9`。
 
 ---
 
@@ -43,7 +43,9 @@ dsh plugin --profile web add github:mojingjing-git/dsh-subagent-agy
 dsh plugin --profile web add /path/to/dsh-external-dsh-subagent-antigravity-0.1.0.tgz
 ```
 
-装完即用，无需重启。任何会话里的模型都能调用 `antigravity` 系列工具。
+工具装完即用（任何会话里的模型都能调用 `antigravity` 系列）。**侧边栏面板是
+web client 扩展，需要重启一次 DSH 才会出现**；升级安装包后同样要重启，
+因为旧版本的 client bundle 已被加载进页面。
 
 ---
 
@@ -87,6 +89,25 @@ agy 的模型是多模态的——把图片路径写进 prompt，它就能描述
 - **停止任务**：用运行中任务的键调用 `antigravity_cancel`（后台任务也可用
   `job_kill`）。
 
+### 侧边栏面板
+
+侧边栏底部有一个 **Antigravity Manager** 按钮：`●N` 是正在运行的任务数，右侧百分比是**当前配置
+模型所属族**的五小时剩余额度（悬停可看重置时间）。点击它会在右栏打开 **Antigravity
+Manager** 标签页：
+
+- **四张额度卡**：直接取 `agy --print "/usage"` 的输出，按「Gemini Models /
+  Claude and GPT models」× 「五小时 / 每周」排列，带重置时间。一次查询约 10 秒，
+  所以结果缓存 5 分钟（单飞，多个面板不会各拉起一个 agy）；卡片上的「刷新额度」
+  可强制刷新。
+- **会话列表**：只列**经本插件跑过**的对话（`~/.dsh/agy-conversations.json`），
+  显示标题、时间、目录、模型与运行状态；插件自己的测试记录会被过滤掉。
+- **接着跑**：点某一行的「接着跑」，在行内输入新指令并发送，输出显示在面板**底部
+  的独立输出区**（不挤占列表），逐字流式追加；可随时「停止」。同一会话的续跑是
+  串行的，不会两条指令同时打进一个 agy 对话。
+
+面板读取的是本地注册表，所以 DSH 重启后历史会话仍可继续；agy 未安装或未登录时，
+额度区会显示空态而不是报错。
+
 ---
 
 ## 配置
@@ -96,7 +117,7 @@ agy 的模型是多模态的——把图片路径写进 prompt，它就能描述
 
 ```yaml
 dsh-subagent-antigravity:
-  model: gemini-3.1-pro-high   # agy models 里的模型；留空 = agy 默认
+  model: auto                  # auto = 自动选最新的 Gemini Flash 最高档；留空 = agy 默认
   effort: high                 # low | medium | high | xhigh | max
   printTimeoutMs: 300000       # 前台任务上限（5 分钟）
   backgroundTimeoutMs: 3600000 # 后台任务上限（1 小时）
@@ -114,7 +135,7 @@ dsh-subagent-antigravity:
 | `tasksToolName` | `antigravity_tasks` | 任务列表工具名 |
 | `cancelToolName` | `antigravity_cancel` | 取消任务工具名 |
 | `command` | `agy` | 可执行文件（PATH 名或绝对路径） |
-| `model` | `''` | `--model <slug>`（见 `agy models`）；留空 = agy 默认 |
+| `model` | `''` | `--model <slug>`（见 `agy models`）；`auto` = 探测 `agy models`，取最新 Gemini Flash 的最高思考档（24h 缓存）；留空 = agy 默认 |
 | `effort` | `''` | `--effort low\|medium\|high\|xhigh\|max`；留空 = 不传 |
 | `agent` | `''` | `--agent <name>`；留空 = 不传 |
 | `printTimeoutMs` | `300000` | 前台任务上限（`--print-timeout`；插件会探测本机 agy 是否要求带单位） |
@@ -154,6 +175,13 @@ dsh-subagent-antigravity:
 文件会先备份一次（`*.corrupt`）再重置，绝不会被静默覆盖；所有注册表
 写入都是串行化的，并发运行不会互相丢失记录。
 
+侧边栏面板由两部分组成：host 侧在 `webServer` 可用后注册 `/api-agy/*` 的 JSON
+路由（额度、会话、运行中任务、续跑、停止），client 侧是一个独立的
+`lib/client.js`（通过 `exports["./client"]` + `dsh.client` 声明）。面板里的
+「接着跑」复用了插件的后台运行通道：`--output-format stream-json` 的
+`text_delta` 事件被逐行解析后供前端轮询追加，因此面板关掉、页面刷新都不会
+丢输出——真正在跑的是 host 侧的 agy 进程。
+
 ---
 
 ## 故障排查
@@ -168,15 +196,20 @@ dsh-subagent-antigravity:
 | 任务卡在浏览器工具上 | `avoidBrowser`（默认开启）已阻止；确实需要浏览器预览时才设 `false` |
 | `file size (…) exceeds limit` | agy 读取工具上限 4 MB；`avoidLargeReads`（默认开启）已让 agy 改用 grep/sed——或瘦身该文件 |
 | 注册表损坏 | 插件会把损坏的文件备份一次到 `*.corrupt` 再重置注册表——历史记录绝不会被静默覆盖 |
+| 侧边栏没有 **Antigravity Manager** 按钮 | client 扩展只在启动时加载：重启 DSH；仍没有就确认安装的包里含 `lib/client.js`（`patched.9` 起） |
+| 面板里额度一直「读取中」 | 首次探测 `agy /usage` 约 10 秒；超过 30 秒检查 `agy` 是否可执行、是否已登录 |
+| 面板会话列表为空 | 列表只含本插件跑过的会话；先用 `antigravity` 工具跑一次（注册表在 `~/.dsh/agy-conversations.json`） |
 
 ---
 
 ## 开发
 
 ```bash
-bash scripts/build.sh            # 从 DSH 运行时 junction 链接 @deepseek-ai 依赖，然后 tsc 编译 src/ → lib/
-npm run selftest                 # 离线自检：agy 存在性、参数探测、注册表往返
-npm run selftest:e2e             # + 真实 PONG 双轮对话（需要已登录 agy）
+npm run build        # tsc 编译 src/ → lib/，并复制、校验 client bundle
+npm test             # 93 条离线断言（模拟 agy）
+npm run test:panel   # 39 条：数据源、host 路由、流式续跑、client 契约、model: auto
+npm run test:e2e     # 真实双轮对话（需要已登录 agy）
+npm run pack         # 打 tgz，供 `dsh plugin add`
 ```
 
 本地 DSH 开发流程（超级模组注入器）：`dev_build_plugin`（构建+打包）→

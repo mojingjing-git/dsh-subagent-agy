@@ -7,6 +7,63 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 Upstream baseline: `@dsh-external/dsh-subagent-antigravity@0.2.0`
 ([ZEM17/dsh-subagent-agy](https://github.com/ZEM17/dsh-subagent-agy), MIT).
 
+## [0.2.0-patched.11]
+
+### Added
+
+- **`model: auto`.** The plugin probes `agy models` once at startup (cached for
+  24 h in `$DSH_HOME/agy-models.json`) and passes the newest Gemini Flash slug
+  at its highest thinking level — today `gemini-3.8-flash-high`. A retired or
+  renamed model therefore heals itself instead of failing every run with
+  `invalid model selection`; when the catalogue is empty or unreachable the
+  `--model` flag is omitted and agy's own default applies.
+- `test/agy-models.mjs` — parsing, numeric version ranking, cache corruption and
+  an end-to-end `model: auto` run (panel suite now 39 assertions).
+
+### Changed
+
+- The sidebar footer button and the right-hand tab are titled
+  **Antigravity Manager** instead of `AGY`.
+
+## [0.2.0-patched.10]
+
+### Fixed
+
+- **White screen on DSH boot after installing patched.9.** The web loader
+  evaluates plugin client bundles as classic scripts, so `module` does not exist;
+  the factory threw `ReferenceError: module is not defined` and the whole web
+  entry failed to activate (`web boot: 1 entry did not activate`). `lib/client.js`
+  now installs the same `module`/`exports` shell the official client plugins use
+  before returning its exports.
+
+## [0.2.0-patched.9]
+
+### Added
+
+- **Sidebar panel.** An `AGY` button in the sidebar footer (`●N` running jobs +
+  the configured model family's five-hour quota) opens an AGY tab in the right
+  sidebar: four quota cards from `agy /usage` (five-minute TTL cache,
+  single-flight), the list of conversations this plugin ran (title, time,
+  directory, model, state) and an inline "continue" box whose output streams
+  into a separate area at the bottom of the panel.
+- Seven host JSON routes (`/api-agy/usage|conversations|running|continue|run|
+  cancel|prefs`) registered through the optional `webServer` service.
+- `npm run test:panel` — 33 assertions over the data sources, host routes,
+  fake-agy streaming and the client-bundle contract.
+
+### Changed
+
+- Client extension packaging: `exports["./client"]`, `dsh.client`, peer React and
+  a build step that copies and verifies `lib/client.js`.
+
+### Fixed
+
+- Continuing from the panel passes `--conversation` after the shared argv is
+  assembled (previously the flag could be dropped and the run started a new
+  conversation).
+- Registry listing drops `test-session::` / fake-conversation rows and
+  de-duplicates real ones.
+
 ## [0.2.0-patched.5]
 
 The first release of this fork. Upstream 0.2.0 could not load on DSH 0.2.1-rc.2

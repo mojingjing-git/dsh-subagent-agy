@@ -6,13 +6,180 @@ This fork (`mojingjing-git/dsh-subagent-agy`) carries the patches below.
 
 The patches now live in **TypeScript source** (`src/index.ts`), not hand-edited
 into the compiled bundle: the fork ships the source, a `tsc` build
-(`npm run build`), an offline suite (`test/run.mjs`, 73 assertions against a
-simulated agy) and an end-to-end suite (`test/e2e-real.mjs`, 13 assertions
-against the installed `agy`).
+(`npm run build`), an offline suite (`test/run.mjs`, 93 assertions against a
+simulated agy), five panel suites (`npm run test:panel`, 39 assertions) and an
+end-to-end suite (`test/e2e-real.mjs`, 13 assertions against the installed `agy`).
 
 The package name (`@dsh-external/dsh-subagent-antigravity`) and the Cordis mount
 id (`dsh-subagent-antigravity`) never change, so this build drops in where the
-upstream release was. Version: `0.2.0-patched.7`.
+upstream release was. Version: `0.2.0-patched.11`.
+
+## v11 — `model: auto`: the deepest current model, resolved at startup
+
+The configured model was the one thing that could break every run silently: a
+slug retired by Google makes agy answer `invalid model selection`, and the fix
+had to be a config edit plus a DSH restart. It also put the choice to the wrong
+party — the user asked for "the highest thinking depth", not a slug they must
+track.
+
+`model: auto` resolves it from the CLI itself:
+
+- `agy models` (a ~10.7 s network call) is probed once at plugin start, off the
+  boot path, and cached for 24 h in `$DSH_HOME/agy-models.json`.
+- The rule is `gemini-<version>-flash-<depth>`: newest dotted version first
+  (`3.10` > `3.9`, `4.0` > `3.8`), then `high` > `medium` > `low` inside one
+  version. Today that is `gemini-3.8-flash-high`.
+- Empty/unreachable catalogue or a failed probe → `--model` is omitted and agy's
+  own default applies. A stale cache beats guessing; a corrupt cache reads as
+  missing.
+- The resolved slug is what `--model`, the task registry and the panel's model
+  column use, so `auto` never shows up as a literal model name.
+
+There is no LLM-facing hint: a prompt cannot change the model agy was spawned
+with, and a text note telling the DSH model to "choose the highest depth" had no
+lever to pull. The resolution happens in the plugin.
+
+The sidebar button and tab title also became **Antigravity Manager** (the tab
+id stays `agy`).
+
+## v10 — the client bundle's missing CommonJS shell (white screen on boot)
+
+patched.9 shipped the first web client entry. DSH's web loader evaluates plugin
+bundles as **classic scripts**, so there is no ambient `module`; the factory's
+trailing `return module.exports` threw `ReferenceError: module is not defined`,
+the entry failed to activate, and the whole GUI booted blank
+(`web boot: 1 entry did not activate`).
+
+`lib/client.js` now opens with the same three-line shell the official client
+plugins use:
+
+```js
+var module = { exports: {} }
+var exports = module.exports
+Object.defineProperty(exports, Symbol.toStringTag, { value: 'Module' })
+```
+
+`test/panel-client.mjs` previously injected `module`/`exports` into the factory
+with `new Function`, which is exactly why the suite stayed green through the
+break. It now evaluates the bundle in a `node:vm` context with no `module`,
+`exports` or `require`, matching the real loader; `scripts/build.mjs` runs the
+same check before it copies the file.
+
+## v9 — sidebar panel: quotas, past runs, and "continue" from the UI
+
+The plugin had four tools and no face. This release adds one: an `AGY` button in
+the sidebar footer (`●N` running jobs + the configured model's five-hour quota)
+that opens an **AGY** tab in the right sidebar — four quota cards, the list of
+conversations the plugin has run, and an inline box to continue any of them with
+streamed output in a separate area at the bottom of the panel.
+
+Three facts shaped the design, all verified against the real machine before
+writing code:
+
+1. **`agy --print "/usage"` is TSV, and it takes ~12 seconds.** Four rows =
+   two model families × two windows:
+   `Gemini Models` / `Claude and GPT models` × `Five Hour` / `Weekly`, each with
+   a percentage and an ISO reset time. Twelve seconds is far too slow for a
+   footer badge, so `src/agy-usage.ts` wraps the probe in a **5-minute TTL cache
+   with single-flight** and a cache file under `$DSH_HOME`; ten open panes still
+   produce one agy process, and a failed refresh serves the last good snapshot
+   (marked stale) instead of an empty panel.
+2. **`webServer.register` accepts only `exact` or `prefix` routes** — there is no
+   `:param` matching. The panel therefore uses `/api-agy/run` (with the run id in
+   the body) rather than `/api-agy/runs/:id`, and `jsonRoute` (the same shape
+   `dsh-chat-import` uses) replies with a JSON content type instead of an HTML
+   error page.
+3. **`~/.dsh/agy-conversations.json` is the only honest list source.** It holds
+   exactly what the plugin ran — `label`, `createdAt`, `cwd`,
+   `conversationId` — and no other session's history. It also holds test junk
+   (`test-session::…` keys with `fake-conversation-0001`), so
+   `src/agy-conversations.ts` drops fake rows, de-duplicates real ones and keeps
+   hidden entries hidden. Model names are not in the registry: they are recovered
+   from the conversation's `.db` with a byte-level `gemini-[…]` scan, and a
+   failed read degrades that one row to `—` instead of failing the list.
+
+The host half (`src/agy-panel.ts`) registers seven JSON routes once the optional
+`webServer` service appears (`ctx.inject(['webServer'], …)`): `usage`,
+`conversations`, `running`, `continue`, `run`, `cancel`, `prefs`.
+
+The "continue" path deliberately does **not** grow a second stream parser. The
+existing background runner already had a complete `stream-json` consumer
+(`init` → `conversation_id`, `step_update` → `text_delta`, `result` → status),
+so it was split into a reusable `runBackgroundPlan()` and given a
+`startPanelRun()` entry that returns a handle with a cursor-based
+`readOutput()`. Two fixes fell out of that refactor:
+
+- the panel path must pass `--conversation <id>` **after** the shared argv is
+  built, or the CLI resumes nothing (caught by `test/panel-stream.mjs`, which
+  runs a fake agy and asserts the argv);
+- `runRecords` now carries the model, so a conversation continued from the panel
+  records its model like any tool-started run.
+
+### Packaging contract (this is what makes the panel appear)
+
+A client extension is not a normal dependency. All of the following are
+required, and all four are now in `package.json` / `scripts/build.mjs`:
+
+- `exports["./client"]` → `./lib/client.js` (a hand-written UMD bundle that
+  registers through `window.__ModuleLoader__`; there is no bundler in this repo);
+- `dsh.client = { inject: ["@deepseek-ai/dsh-client-locale"], platform: "web" }`;
+- `@deepseek-ai/dsh`, `@deepseek-ai/dsh-client-locale` and `react` as peer
+  dependencies — the client bundle `require`s them from the host;
+- `scripts/build.mjs` copies `src/client.js` into `lib/` and verifies it, so
+  `npm pack` cannot silently ship a host-only package.
+
+The tab is registered through `ctx.effect(() => tabs.register(...))` and both
+slots through `ctx.slots.inject(...)`. A bare `slots.register` at apply time
+throws in the advanced shell — that is the white-screen failure mode the plan
+called out, and `test/panel-client.mjs` now asserts that every slot goes through
+`inject` and that every endpoint the client calls exists on the host.
+
+Upgrading an installed profile needs a **DSH restart**: the host routes load with
+the plugin, but the already-open page keeps the old client bundle.
+
+## v8 — `background: true` was broken: `owner` was an Agent, not a SessionId
+
+Reported symptom: across several models, the tool was never used. Session
+recordings from the reporter's own project settled it — 7 sessions, 102 jobs
+registered, **zero of them `antigravity`**, including one where the user named
+the tool explicitly. The model was not being shy; the call could not succeed.
+
+Root cause, in `dsh-jobs-local`:
+
+```js
+resolveOwner(session) {
+  const owner = agents.get(session)                       // session id -> Agent
+  if (owner === undefined) throw new Error(
+    `session "${session}" has no live agent (background job owner must be live)`)
+}
+```
+
+`start()` passes `spec.owner` through that. The plugin passed the **Agent
+object**:
+
+```js
+...(parent !== undefined ? { owner: parent } : {}),   // parent = exec.agent
+```
+
+`agents.get(<Agent>)` never resolves, so every `background: true` call threw
+`session "[object Object]" has no live agent` — the `[object Object]` is the
+stringified Agent. Foreground calls were unaffected, which is why the tool
+appeared to work in every demo and failed in every real handout.
+
+Fixed: `owner: parent.session.id`.
+
+### Why the suites missed it
+
+`test/harness.mjs` accepted any `spec.owner` and its `view()` read
+`job.owner?.id`, so an Agent object looked fine. The assertion in
+`wake/owner-is-exec-agent` even asserted the object shape — the stub and the test
+were wrong together. The stub now enforces the real contract: `owner` must be a
+string that `ctx.get('agents').get()` resolves, or `start()` throws the same
+message `dsh-jobs-local` throws. Reverting the one-line fix now fails three
+cases with the production error verbatim (80/83 instead of 93/93).
+
+`test/e2e-real.mjs` had no background case at all. That gap is why a real
+regression reached a release; background coverage is the next addition.
 
 ## v7 — the tool descriptions say "sub-agent", not just "antigravity"
 

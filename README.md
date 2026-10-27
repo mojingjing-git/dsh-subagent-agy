@@ -11,9 +11,9 @@ login (system keyring / Google Sign-In).
 >
 > **This is a fork.** Upstream is [ZEM17/dsh-subagent-agy](https://github.com/ZEM17/dsh-subagent-agy)
 > by ZEM17 (`@dsh-external/dsh-subagent-antigravity@0.2.0`, MIT). This fork adds
-> DSH 0.2.1-rc.2 compatibility, per-run transcripts, agy 1.4.x support and the
-> test suites described below — see [PATCH.md](PATCH.md) for every change and why.
-> Version `0.2.0-patched.6`.
+> DSH 0.2.1-rc.2 compatibility, per-run transcripts, agy 1.4.x support, the
+> sidebar panel and the test suites described below — see [PATCH.md](PATCH.md)
+> for every change and why. Version `0.2.0-patched.9`.
 
 ---
 
@@ -46,8 +46,10 @@ dsh plugin --profile web add github:mojingjing-git/dsh-subagent-agy
 dsh plugin --profile web add /path/to/dsh-external-dsh-subagent-antigravity-0.1.0.tgz
 ```
 
-That's it — no restart needed. The model in any session can now use the
-`antigravity` tools.
+The tools work right away — the model in any session can use the `antigravity`
+series. **The sidebar panel is a web-client extension and needs one DSH
+restart**; upgrading the package needs the same restart, because the old client
+bundle is already loaded in the open page.
 
 ---
 
@@ -96,6 +98,31 @@ directory in the tool's `dirs` parameter (or the `addDirs` config).
 - **Stop a task**: `antigravity_cancel` with the running task's key stops it
   (also possible via `job_kill` for background jobs).
 
+### Sidebar panel
+
+The sidebar footer carries an **Antigravity Manager** button: `●N` is the number of running jobs
+and the percentage is the five-hour quota left for the **model family of the
+configured model** (hover for the reset time). Clicking it opens the
+**Antigravity Manager** tab in the right sidebar:
+
+- **Four quota cards**, taken straight from `agy --print "/usage"`: Gemini
+  Models / Claude and GPT models × five-hour / weekly, each with its reset time.
+  One probe takes ~10 seconds, so the result is cached for five minutes
+  (single-flight — many open panes still spawn one agy); the card's refresh
+  button forces a new probe.
+- **Conversation list**: only conversations **this plugin** ran
+  (`~/.dsh/agy-conversations.json`), with title, time, working directory, model
+  and run state. The plugin's own test records are filtered out.
+- **Continue**: click "接着跑" on a row, type the next instruction inline and
+  send. Output appears in a **separate area at the bottom of the panel** (it does
+  not squeeze the list) and streams token by token; stop it at any time.
+  Continuations of one conversation are serialised, so two instructions never
+  land in the same agy conversation at once.
+
+The panel reads the local registry, so past conversations remain resumable after
+a DSH restart; when agy is missing or logged out the quota area shows an empty
+state instead of an error.
+
 ---
 
 ## Configuration
@@ -105,7 +132,7 @@ plugin's settings section (e.g. `$DSH_HOME/settings.yaml`):
 
 ```yaml
 dsh-subagent-antigravity:
-  model: gemini-3.1-pro-high   # agy models; empty = agy default
+  model: auto                  # auto = newest Gemini Flash, highest thinking level; empty = agy default
   effort: high                 # low | medium | high | xhigh | max
   printTimeoutMs: 300000       # foreground ceiling (5 min)
   backgroundTimeoutMs: 3600000 # background ceiling (1 h)
@@ -123,7 +150,7 @@ dsh-subagent-antigravity:
 | `tasksToolName` | `antigravity_tasks` | tasks-listing tool name |
 | `cancelToolName` | `antigravity_cancel` | cancel-running-task tool name |
 | `command` | `agy` | executable (PATH name or absolute path) |
-| `model` | `''` | `--model <slug>` (see `agy models`); empty = agy default |
+| `model` | `''` | `--model <slug>` (see `agy models`); `auto` = probe `agy models` and take the newest Gemini Flash at its highest thinking level (24 h cache); empty = agy default |
 | `effort` | `''` | `--effort low\|medium\|high\|xhigh\|max`; empty = omit |
 | `agent` | `''` | `--agent <name>`; empty = omit |
 | `printTimeoutMs` | `300000` | foreground run ceiling (`--print-timeout`; the plugin probes whether this build wants a unit) |
@@ -167,6 +194,14 @@ self-heals: a corrupted file is backed up once (`*.corrupt`) and reset
 instead of being silently overwritten, and all registry writes are
 serialized, so concurrent runs never lose each other's records.
 
+The sidebar panel is two halves: the host registers `/api-agy/*` JSON routes once
+the optional `webServer` service appears (usage, conversations, running,
+continue, cancel), and the client is a separate `lib/client.js` declared through
+`exports["./client"]` + `dsh.client`. "Continue" reuses the background pipeline:
+`--output-format stream-json` events are parsed once on the host and the pane
+polls a cursor, so closing the panel or reloading the page loses no output — the
+agy process keeps running on the host either way.
+
 ---
 
 ## Troubleshooting
@@ -181,15 +216,20 @@ serialized, so concurrent runs never lose each other's records.
 | task hangs on a browser tool | `avoidBrowser` (default on) prevents it; set `false` only when a browser preview is genuinely needed |
 | `file size (…) exceeds limit` | agy's read tool caps at 4 MB; `avoidLargeReads` (default on) tells agy to use grep/sed instead — or slim the file |
 | registry corrupted | the plugin backs the damaged file up once to `*.corrupt` and restarts the registry fresh — history is never silently overwritten |
+| no `AGY` button in the sidebar | client extensions load at startup: restart DSH; if it persists check the installed package contains `lib/client.js` (`patched.9` and later) |
+| quota stuck on "reading" | the first `agy /usage` probe takes ~10 s; past 30 s check that `agy` runs and is logged in |
+| conversation list is empty | it only lists runs of this plugin — run one `antigravity` task first (registry: `~/.dsh/agy-conversations.json`) |
 
 ---
 
 ## Development
 
 ```bash
-bash scripts/build.sh            # junction-link @deepseek-ai deps from the DSH runtime, then tsc src/ → lib/
-npm run selftest                 # offline checks: agy presence, flag probe, registry round trip
-npm run selftest:e2e             # + live PONG round trip and follow-up (needs an agy login)
+npm run build        # tsc src/ → lib/, then copy and verify the client bundle
+npm test             # 93 offline assertions against a simulated agy
+npm run test:panel   # 39 assertions: data sources, host routes, stream, client contract, model: auto
+npm run test:e2e     # live round trip and follow-up (needs an agy login)
+npm run pack         # tarball for `dsh plugin add`
 ```
 
 Dev workflow on a local DSH (super-injector): `dev_build_plugin` (build +
