@@ -45,6 +45,14 @@ export interface ConversationHistory {
     error?: string;
 }
 /**
+ * Is this only the name of the model that answered?
+ *
+ * agy does not keep the reply body of every conversation. Where the body is
+ * missing, the step carries nothing but the model name, and showing that as
+ * if it were the answer would be a lie.
+ */
+export declare function looksLikeModelName(text: string): boolean;
+/**
  * Read a conversation's step timeline from agy's database.
  *
  * Never throws: a missing or locked database yields an empty timeline with a

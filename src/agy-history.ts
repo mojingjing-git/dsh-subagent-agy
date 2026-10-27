@@ -296,6 +296,19 @@ function pickToolSummary(texts: readonly string[], parameters: Record<string, un
   return ''
 }
 
+/**
+ * Is this only the name of the model that answered?
+ *
+ * agy does not keep the reply body of every conversation. Where the body is
+ * missing, the step carries nothing but the model name, and showing that as
+ * if it were the answer would be a lie.
+ */
+export function looksLikeModelName(text: string): boolean {
+  const clean = cleanText(text)
+  if (clean.length === 0) return true
+  return /^(gemini|claude|gpt|qwen|deepseek|o[34])[\w .()+-]{0,48}$/i.test(clean)
+}
+
 function clip(text: string, max = MAX_HISTORY_TEXT): string {
   if (text.length <= max) return text
   return `${text.slice(0, max)}…(+${text.length - max} chars)`
@@ -369,7 +382,11 @@ function decodeStep(row: StepRow, replyBody: string | null): StepEvent {
   let text = ''
   let tool: StepTool | null = null
   if (type === 'agent_response') {
-    text = replyBody ?? pickProse(texts)
+    // The reply body sits in the step payload. gen_metadata is only a fallback
+    // for conversations agy started in its own IDE, and what it holds there
+    // is often nothing but the model name — which would shadow the real body.
+    const fromPayload = pickProse(payload)
+    text = fromPayload !== '' ? fromPayload : (replyBody ?? '')
   } else if (type === 'user_input') {
     text = pickProse(texts)
   } else if (type === 'tool') {

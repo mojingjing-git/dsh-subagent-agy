@@ -23,9 +23,9 @@ for (const item of items.slice(0, 4)) {
   console.log(`${item.label}  [${item.conversationId.slice(0, 8)}]  model=${item.model}`)
   console.log(`steps=${history.steps.length} / ${history.stepCount}  source=${history.source}${history.error ? ` error=${history.error}` : ''}`)
   for (const step of history.steps.slice(0, 6)) {
-    const head = `  [${step.kind}] ${step.tool ?? ''} ${step.status ?? ''}`.trimEnd()
+    const head = `  [${step.type}] ${step.tool?.name ?? ''} ${step.state ?? ''}`.trimEnd()
     console.log(head)
     if (step.text) console.log(`      ${step.text.slice(0, 160).replace(/\n/g, '\n      ')}`)
-    if (step.toolParams) console.log(`      params: ${step.toolParams.slice(0, 160)}`)
+    if (step.tool?.parameters) console.log(`      params: ${JSON.stringify(step.tool.parameters).slice(0, 160)}`)
   }
 }
