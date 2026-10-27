@@ -90,6 +90,10 @@ foreach ($file in @('lib/index.js', 'lib/types/index.d.ts')) {
     $path = Join-Path $root $file
     if (-not (Test-Path -LiteralPath $path)) { Die "missing $file" }
 }
+# The declaration must be real, not an empty-peers stub: a shim-only build
+# can emit an index.d.ts that imports nothing and types everything as any.
+$decl = Get-Item -LiteralPath (Join-Path $root 'lib/types/index.d.ts')
+if ($decl.Length -lt 1024) { Die ("lib/types/index.d.ts is only $($decl.Length) bytes — looks like a stub, not a real declaration") }
 foreach ($file in Get-ChildItem -LiteralPath (Join-Path $root 'lib') -Recurse -Filter '*.js') {
     & $node --check $file.FullName 2>&1 | Out-String | ForEach-Object { if ($_.Trim()) { Die "syntax error in $($file.Name): $_" } }
 }
