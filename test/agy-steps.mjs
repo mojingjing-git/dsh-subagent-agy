@@ -142,4 +142,36 @@ check('a repeat of the oldest in-window step still updates in place', () => {
   assert.ok(after[0].text.includes('more '))
 })
 
+// Normalization must happen exactly once per step, at the fold's entry: every
+// snapshot re-normalizing a truncated step rewrites its own '…(+N chars)'
+// marker into a bogus '(+12 chars)' receipt (the marker is what the panel
+// shows), and wastes a fresh allocation every 250 ms poll.
+const oversizedStep = () => parseStepUpdate({ step_index: 1, state: 'DONE', step_type: 'agent_response', text_delta: 'x'.repeat(5000) })
+
+check('snapshotSteps is idempotent over an already normalized timeline', () => {
+  const steps = mergeStepInto([], oversizedStep())
+  const first = snapshotSteps(steps)
+  const second = snapshotSteps(first)
+  assert.equal(second[0].text, first[0].text, `${JSON.stringify(first[0].text.slice(-20))} vs ${JSON.stringify(second[0].text.slice(-20))}`)
+  assert.ok(first[0].text.endsWith('…(+904 chars)'), first[0].text.slice(-20))
+})
+
+check('a truncated marker is never re-truncated by the fold either', () => {
+  // A second merge appends NEW text (the receipt grows to (+5013 chars) —
+  // legitimate), but snapshots of that timeline must stay stable too.
+  let steps = mergeStepInto([], oversizedStep())
+  steps = mergeStepInto(steps, oversizedStep())
+  const first = snapshotSteps(steps)
+  const second = snapshotSteps(first)
+  assert.equal(second[0].text, first[0].text)
+  assert.ok(first[0].text.endsWith('…(+5013 chars)'), first[0].text.slice(-20))
+})
+
+check('snapshotSteps keeps a truncated tool preview stable', () => {
+  const big = parseStepUpdate({ step_index: 1, state: 'DONE', step_type: 'tool', tool_name: 'run_command', tool_info: { name: 'run_command', parameters: { Command: 'y'.repeat(3000) } } })
+  const first = snapshotSteps(mergeStepInto([], big))
+  const second = snapshotSteps(first)
+  assert.equal(second[0].tool.preview, first[0].tool.preview)
+})
+
 console.log(`\n${passed} checks passed`)

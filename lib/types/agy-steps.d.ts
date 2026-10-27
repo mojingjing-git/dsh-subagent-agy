@@ -91,7 +91,9 @@ export declare function mergeStepInto(steps: readonly StepEvent[], incoming: Ste
  * A bounded copy of the timeline, newest steps last.
  *
  * The window keeps the most recent {@link MAX_STEPS} steps so a long run
- * cannot grow the payload without limit; every step inside it is already
- * normalized.
+ * cannot grow the payload without limit. Every step in the timeline was
+ * normalized when it entered the fold, so the snapshot copies — it must not
+ * re-normalize: a second pass rewrites each step's own truncation receipt
+ * (and allocates a fresh timeline) on every 250 ms panel poll.
  */
 export declare function snapshotSteps(steps: readonly StepEvent[]): StepEvent[];
