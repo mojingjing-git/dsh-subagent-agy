@@ -13,7 +13,7 @@ login (system keyring / Google Sign-In).
 > by ZEM17 (`@dsh-external/dsh-subagent-antigravity@0.2.0`, MIT). This fork adds
 > DSH 0.2.1-rc.2 compatibility, per-run transcripts, agy 1.4.x support, the
 > sidebar panel and the test suites described below — see [PATCH.md](PATCH.md)
-> for every change and why. Version `0.2.0-patched.9`.
+> for every change and why. Version `0.2.0-patched.13`.
 
 ---
 
@@ -39,11 +39,11 @@ dsh plugin --profile web add github:mojingjing-git/dsh-subagent-agy
 ```
 
 **From a tarball**: download
-`dsh-external-dsh-subagent-antigravity-0.2.0.tgz` from the
+`dsh-external-dsh-subagent-antigravity-0.2.0-patched.13.tgz` from the
 [releases page](https://github.com/mojingjing-git/dsh-subagent-agy/releases), then:
 
 ```bash
-dsh plugin --profile web add /path/to/dsh-external-dsh-subagent-antigravity-0.1.0.tgz
+dsh plugin --profile web add /path/to/dsh-external-dsh-subagent-antigravity-0.2.0-patched.13.tgz
 ```
 
 The tools work right away — the model in any session can use the `antigravity`
@@ -234,8 +234,8 @@ agy process keeps running on the host either way.
 
 ```bash
 npm run build        # tsc src/ → lib/, then copy and verify the client bundle
-npm test             # 93 offline assertions against a simulated agy
-npm run test:panel   # 39 assertions: data sources, host routes, stream, client contract, model: auto
+npm test             # 113 offline assertions against a simulated agy
+npm run test:panel   # 80 checks: data sources, host routes, stream, client contract, model: auto
 npm run test:e2e     # live round trip and follow-up (needs an agy login)
 npm run pack         # tarball for `dsh plugin add`
 ```

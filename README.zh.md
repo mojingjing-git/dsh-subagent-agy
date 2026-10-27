@@ -11,7 +11,7 @@ agy 使用你的 Antigravity 登录态（系统凭据 / Google 登录）完成�
 > **本项目是 fork。** 上游是 ZEM17 的 [ZEM17/dsh-subagent-agy](https://github.com/ZEM17/dsh-subagent-agy)
 > （`@dsh-external/dsh-subagent-antigravity@0.2.0`，MIT）。本 fork 增加了 DSH
 > 0.2.1-rc.2 兼容、每次运行的完整轨迹、agy 1.4.x 支持、侧边栏面板，以及下方描述的
-> 测试套件——全部改动及原因见 [PATCH.md](PATCH.md)。当前版本 `0.2.0-patched.9`。
+> 测试套件——全部改动及原因见 [PATCH.md](PATCH.md)。当前版本 `0.2.0-patched.13`。
 
 ---
 
@@ -37,10 +37,10 @@ dsh plugin --profile web add github:mojingjing-git/dsh-subagent-agy
 
 **从安装包安装**：到
 [Releases 页面](https://github.com/mojingjing-git/dsh-subagent-agy/releases) 下载
-`dsh-external-dsh-subagent-antigravity-0.2.0.tgz`，然后：
+`dsh-external-dsh-subagent-antigravity-0.2.0-patched.13.tgz`，然后：
 
 ```bash
-dsh plugin --profile web add /path/to/dsh-external-dsh-subagent-antigravity-0.1.0.tgz
+dsh plugin --profile web add /path/to/dsh-external-dsh-subagent-antigravity-0.2.0-patched.13.tgz
 ```
 
 工具装完即用（任何会话里的模型都能调用 `antigravity` 系列）。**侧边栏面板是
@@ -213,8 +213,8 @@ dsh-subagent-antigravity:
 
 ```bash
 npm run build        # tsc 编译 src/ → lib/，并复制、校验 client bundle
-npm test             # 93 条离线断言（模拟 agy）
-npm run test:panel   # 39 条：数据源、host 路由、流式续跑、client 契约、model: auto
+npm test             # 113 条离线断言（模拟 agy）
+npm run test:panel   # 80 项检查：数据源、host 路由、流式续跑、client 契约、model: auto
 npm run test:e2e     # 真实双轮对话（需要已登录 agy）
 npm run pack         # 打 tgz，供 `dsh plugin add`
 ```
