@@ -42,7 +42,16 @@ jobs:
         # script probes for them instead of assuming.
         run: node scripts/build.mjs
 
+      - name: Committed lib matches src
+        # lib/ is committed so the suites exercise the artifact that ships. A
+        # diff here means src changed without rebuilding — fail instead of
+        # letting every later step "pass" against stale output.
+        run: git diff --exit-code -- lib/
+
       - name: Offline suite
         run: node test/run.mjs
+
+      - name: Panel suites
+        run: npm run test:panel
 
 

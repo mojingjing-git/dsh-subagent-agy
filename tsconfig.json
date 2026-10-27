@@ -13,6 +13,7 @@
     "skipLibCheck": true,
     "esModuleInterop": true,
     "forceConsistentCasingInFileNames": true,
+    "newLine": "lf",
     "sourceMap": true
   },
   "include": ["src"]
