@@ -95,10 +95,15 @@ assert.deepEqual([...routes.keys()].sort(), [
 ])
 for (const route of routes.values()) assert.equal(route.kind, 'exact')
 
-async function call(path, body) {
+async function call(path, body, headers = {}) {
   const route = routes.get(path)
   const req = Readable.from(body === undefined ? [] : [Buffer.from(JSON.stringify(body))])
   req.method = 'POST'
+  req.headers = {
+    host: '127.0.0.1:6193',
+    'content-type': 'application/json',
+    ...headers,
+  }
   const res = {
     status: 0,
     body: '',
@@ -142,6 +147,41 @@ try {
     const res = { status: 0, body: '', headersSent: false, writeHead(s) { this.status = s; this.headersSent = true }, end(t) { this.body = t } }
     await route.handler(req, res)
     assert.equal(res.status, 405)
+  })
+
+  await check('a cross-site Origin is rejected', async () => {
+    const res = await call('/api-agy/usage', {}, { origin: 'http://evil.example.com' })
+    assert.equal(res.status, 403)
+  })
+
+  await check('a sandboxed (null) Origin is rejected', async () => {
+    const res = await call('/api-agy/usage', {}, { origin: 'null' })
+    assert.equal(res.status, 403)
+  })
+
+  await check('a malformed Origin is rejected (fail closed)', async () => {
+    const res = await call('/api-agy/usage', {}, { origin: 'http://' })
+    assert.equal(res.status, 403)
+  })
+
+  await check('a non-loopback Host is rejected (DNS rebinding)', async () => {
+    const res = await call('/api-agy/usage', {}, { host: 'attacker.example.com:6193' })
+    assert.equal(res.status, 403)
+  })
+
+  await check('a non-JSON content type is rejected', async () => {
+    const res = await call('/api-agy/usage', {}, { 'content-type': 'text/plain' })
+    assert.equal(res.status, 415)
+  })
+
+  await check('a curl-style request without Origin still works', async () => {
+    const res = await call('/api-agy/usage', {}, { origin: undefined })
+    assert.equal(res.status, 200)
+  })
+
+  await check('a same-origin request is accepted', async () => {
+    const res = await call('/api-agy/usage', {}, { origin: 'http://127.0.0.1:6193' })
+    assert.equal(res.status, 200)
   })
 
   await check('conversations drop fake rows and carry model + cwd state', async () => {

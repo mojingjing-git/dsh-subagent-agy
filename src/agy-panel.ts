@@ -2,9 +2,11 @@
  * The sidebar panel's host half: six JSON routes over the plugin's own data.
  *
  * Everything here is deliberately POST + JSON. `webServer.register` only takes
- * `exact` or `prefix` routes (no `:param` segments), and a JSON content type is
- * what keeps a cross-site form POST from reaching these handlers: the browser
- * must preflight it, and the preflight fails.
+ * `exact` or `prefix` routes (no `:param` segments). POST + JSON alone does NOT
+ * keep cross-site requests out — the host web server matches routes by path and
+ * applies no auth or Origin check of its own — so every handler also rejects a
+ * non-loopback Host (DNS rebinding), a cross-site Origin, and any request that
+ * is not `application/json`. See `crossSiteBlock`.
  *
  * Streaming: `AntigravityBackgroundHandle.readOutput()` is a destructive cursor
  * (one consumer only), so the store owns exactly one reader — a 250 ms timer —
@@ -218,6 +220,49 @@ interface RouteRequest {
 
 type Handler = (request: RouteRequest) => Promise<[number, unknown]> | [number, unknown]
 
+/** Hostnames only this machine can resolve to. */
+function isLoopbackHostname(hostname: string): boolean {
+  return hostname === 'localhost' || hostname === '::1' || /^127(?:\.\d{1,3}){3}$/.test(hostname)
+}
+
+/**
+ * The host web server routes by path with no auth, no Origin check and no CSRF
+ * token of its own — and every handler behind this panel can start an agy
+ * process with `--dangerously-skip-permissions`. So the panel guards itself: a
+ * Host that is not this machine's loopback (DNS rebinding) and a cross-site
+ * Origin (browser-borne CSRF) are refused outright. A request with no Origin at
+ * all (curl, same-server tooling) passes — a browser always attaches Origin to
+ * a cross-site POST, so absence means no browser is involved. The port is
+ * whatever the request carries; nothing is hardcoded.
+ */
+function crossSiteBlock(req: IncomingMessage): string | null {
+  const host = req.headers.host
+  if (typeof host !== 'string' || host.length === 0) return 'missing Host header'
+  const hostname = host.startsWith('[')
+    ? host.slice(1, Math.max(host.indexOf(']'), 1))
+    : (host.split(':')[0] ?? '')
+  if (!isLoopbackHostname(hostname)) return `refusing non-loopback Host header: ${host}`
+  const origin = req.headers.origin
+  if (origin === undefined) return null
+  if (origin === 'null') return 'refusing sandboxed cross-site Origin: null'
+  let parsed: URL
+  try {
+    parsed = new URL(origin)
+  } catch {
+    return `refusing malformed Origin header: ${origin}`
+  }
+  if ((parsed.protocol !== 'http:' && parsed.protocol !== 'https:') || parsed.host !== host) {
+    return `refusing cross-site Origin: ${origin}`
+  }
+  return null
+}
+
+/** `application/json`, with or without parameters (`charset=…`, …). */
+function isJsonContentType(value: string | string[] | undefined): boolean {
+  const media = (Array.isArray(value) ? value[0] : value) ?? ''
+  return media.split(';', 1)[0]?.trim().toLowerCase() === 'application/json'
+}
+
 /** The `jsonRoute` shape `@deepseek-ai/dsh-host-webserver` accepts. */
 function jsonRoute(path: string, handler: Handler): unknown {
   return {
@@ -228,6 +273,17 @@ function jsonRoute(path: string, handler: Handler): unknown {
         if (req.method !== 'POST') {
           res.writeHead(405, { 'content-type': 'application/json; charset=utf-8', allow: 'POST' })
           res.end(JSON.stringify({ ok: false, error: 'method not allowed' }))
+          return
+        }
+        const crossSite = crossSiteBlock(req)
+        if (crossSite !== null) {
+          res.writeHead(403, { 'content-type': 'application/json; charset=utf-8' })
+          res.end(JSON.stringify({ ok: false, error: crossSite }))
+          return
+        }
+        if (!isJsonContentType(req.headers['content-type'])) {
+          res.writeHead(415, { 'content-type': 'application/json; charset=utf-8' })
+          res.end(JSON.stringify({ ok: false, error: 'content-type must be application/json' }))
           return
         }
         const body = await readJsonBody(req)
