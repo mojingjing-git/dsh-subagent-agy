@@ -18,7 +18,10 @@ import { dirname } from 'node:path'
 import type { Context } from '@deepseek-ai/cordis'
 import type { AntigravityBackgroundHandle, PanelRunInput, TaskRecord } from './index.js'
 import { listConversations, type ConversationItem } from './agy-conversations.js'
+import { readConversationHistory } from './agy-history.js'
+import { readConversationSummaries } from './agy-summaries.js'
 import type { UsageReport } from './agy-usage.js'
+import type { StepEvent } from './agy-steps.js'
 
 /** The slice of `@deepseek-ai/dsh-host-webserver` this module needs. */
 interface WebServerLike {
@@ -47,6 +50,8 @@ export interface AgyPanelDeps {
   baseCwd: string
   conversationsDir: string
   annotationsDir: string
+  /** `~/.gemini/antigravity-cli/conversation_summaries.db` */
+  summariesDbPath: string
   /** Where the panel keeps hidden conversation ids. */
   prefsPath: string
   loadRecords(): Record<string, TaskRecord>
@@ -68,12 +73,31 @@ interface PanelRun {
   endedAt: number | null
   error?: string
   handle: AntigravityBackgroundHandle
+  /**
+   * The structured step timeline of this run — what agy did, in order.
+   *
+   * Steps are updated data, not an append-only text stream: the same step
+   * arrives again when it advances from `ACTIVE` to `DONE`/`ERROR`. They are
+   * therefore never expressed as a cursor delta; the client replaces the
+   * whole list whenever {@link PanelRun.stepsVersion} changes.
+   */
+  steps: StepEvent[]
+  /** Changes whenever `steps` did; the client uses it to decide to replace. */
+  stepsVersion: string
   timer?: NodeJS.Timeout
 }
 
 const MAX_RUN_TEXT = 400 * 1024
 const MAX_RUNS = 20
 const POLL_MS = 250
+
+/** A cheap fingerprint of a step list, used to detect that it changed. */
+function stepsVersion(steps: readonly StepEvent[]): string {
+  let chars = 0
+  for (const step of steps) chars += step.text.length
+  const last = steps.length > 0 ? steps[steps.length - 1] : undefined
+  return `${steps.length}:${chars}:${last?.index ?? -1}:${last?.state ?? ''}`
+}
 
 /** In-memory run table with exactly one consumer of the handle's output cursor. */
 class RunStore {
@@ -93,6 +117,8 @@ class RunStore {
       startedAt: Date.now(),
       endedAt: null,
       handle,
+      steps: [],
+      stepsVersion: '0',
     }
     this.runs.set(id, run)
     run.timer = setInterval(() => this.drain(run), POLL_MS)
@@ -153,6 +179,14 @@ class RunStore {
         if (run.text.length > MAX_RUN_TEXT) run.text = run.text.slice(run.text.length - MAX_RUN_TEXT)
       }
       run.tool = run.handle.tool?.() ?? run.tool
+      const steps = run.handle.steps?.()
+      if (steps !== undefined) {
+        const version = stepsVersion(steps)
+        if (version !== run.stepsVersion) {
+          run.steps = steps
+          run.stepsVersion = version
+        }
+      }
     } catch {
       // A dead handle must not stop the timer from settling the run.
     }
@@ -278,15 +312,19 @@ export function registerAgyPanel(ctx: Context, deps: AgyPanelDeps): void {
       return ok({ ...report, loading: peeked === null })
     }),
 
-    jsonRoute('/api-agy/conversations', () => {
+    jsonRoute('/api-agy/conversations', async () => {
       const prefs = readPrefs(deps.prefsPath)
       let items: ConversationItem[] = []
       try {
+        // The summary table knows when a conversation changed last; the
+        // registry does not. It is optional — without it the list still shows.
+        const summaries = await readConversationSummaries(deps.summariesDbPath)
         items = listConversations({
           records: deps.loadRecords(),
           conversationsDir: deps.conversationsDir,
           annotationsDir: deps.annotationsDir,
           hidden: prefs.hidden,
+          summaries,
         })
       } catch (error) {
         logger.warn(`dsh-subagent-antigravity: conversation list failed: ${String(error)}`)
@@ -297,6 +335,16 @@ export function registerAgyPanel(ctx: Context, deps: AgyPanelDeps): void {
     jsonRoute('/api-agy/running', () => {
       const runs = deps.listActive()
       return ok({ count: runs.length, runs })
+    }),
+
+    // The step timeline of a conversation that is not running any more — read
+    // back from agy's own database.
+    jsonRoute('/api-agy/history', async ({ body }) => {
+      const input = body as { conversationId?: unknown } | null
+      const conversationId = typeof input?.conversationId === 'string' ? input.conversationId : ''
+      if (conversationId.length === 0) return bad('conversationId is required')
+      const history = await readConversationHistory(conversationId, deps.conversationsDir)
+      return ok({ ...history })
     }),
 
     jsonRoute('/api-agy/continue', async ({ body }) => {
@@ -342,6 +390,10 @@ export function registerAgyPanel(ctx: Context, deps: AgyPanelDeps): void {
         cursor: run.text.length,
         reset,
         tool: run.tool,
+        // The step timeline is sent whole; `stepsVersion` says whether it
+        // changed since the last poll.
+        steps: run.steps,
+        stepsVersion: run.stepsVersion,
         elapsedMs: (run.endedAt ?? Date.now()) - run.startedAt,
         ...(run.error !== undefined ? { error: run.error } : {}),
       })

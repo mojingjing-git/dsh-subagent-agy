@@ -19,6 +19,7 @@
 import { existsSync, readFileSync, statSync } from 'node:fs'
 import { join } from 'node:path'
 import type { TaskRecord } from './index.js'
+import type { ConversationSummary } from './agy-summaries.js'
 
 /** One row the panel renders. */
 export interface ConversationItem {
@@ -31,6 +32,14 @@ export interface ConversationItem {
   model: string | null
   /** False when the project directory is gone (unmounted drive, deleted folder). */
   cwdExists: boolean
+  /** When agy saw the conversation change last — falls back to `createdAt`. */
+  lastActivityAt: number
+  /** agy's own state, e.g. `CASCADE_RUN_STATUS_IDLE`. */
+  status: string | null
+  /** How many steps the conversation has, when agy counted them. */
+  stepCount: number
+  /** One line of the conversation's last exchange. */
+  preview: string | null
 }
 
 export interface ListConversationsOptions {
@@ -41,6 +50,8 @@ export interface ListConversationsOptions {
   annotationsDir: string
   /** Conversation ids (or registry keys) the user hid from the panel. */
   hidden?: readonly string[]
+  /** What agy knows about the conversations, keyed by conversation id. */
+  summaries?: ReadonlyMap<string, ConversationSummary>
   limit?: number
 }
 
@@ -92,6 +103,7 @@ export function titleFromAnnotations(annotationsDir: string, conversationId: str
  */
 export function listConversations(options: ListConversationsOptions): ConversationItem[] {
   const hidden = new Set(options.hidden ?? [])
+  const summaries = options.summaries
   const byConversation = new Map<string, ConversationItem>()
 
   for (const [key, record] of Object.entries(options.records)) {
@@ -100,9 +112,12 @@ export function listConversations(options: ListConversationsOptions): Conversati
     // Admission test: a real agy conversation has a database on disk.
     if (!existsSync(join(options.conversationsDir, `${conversationId}.db`))) continue
 
+    const summary = summaries?.get(conversationId)
     const label = record.label.trim().length > 0
       ? record.label.trim()
-      : titleFromAnnotations(options.annotationsDir, conversationId) ?? `agy · ${conversationId.slice(0, 8)}`
+      : titleFromAnnotations(options.annotationsDir, conversationId)
+        ?? summary?.title
+        ?? `agy · ${conversationId.slice(0, 8)}`
     const model = record.model ?? modelFromDb(options.conversationsDir, conversationId)
 
     const item: ConversationItem = {
@@ -113,17 +128,25 @@ export function listConversations(options: ListConversationsOptions): Conversati
       createdAt: record.createdAt,
       model,
       cwdExists: record.cwd.length > 0 && existsSync(record.cwd),
+      lastActivityAt: summary?.lastModifiedAt ?? record.createdAt,
+      status: summary?.status ?? null,
+      stepCount: summary?.stepCount ?? 0,
+      preview: summary?.preview ?? null,
     }
 
     const previous = byConversation.get(conversationId)
     if (previous === undefined || item.createdAt > previous.createdAt) {
       byConversation.set(conversationId, item)
-    } else if (previous.model === null && item.model !== null) {
-      previous.model = item.model
+    } else {
+      if (previous.model === null && item.model !== null) previous.model = item.model
+      if (item.lastActivityAt > previous.lastActivityAt) previous.lastActivityAt = item.lastActivityAt
+      if (previous.status === null && item.status !== null) previous.status = item.status
+      if (previous.stepCount === 0 && item.stepCount > 0) previous.stepCount = item.stepCount
+      if (previous.preview === null && item.preview !== null) previous.preview = item.preview
     }
   }
 
-  const items = [...byConversation.values()].sort((a, b) => b.createdAt - a.createdAt)
+  const items = [...byConversation.values()].sort((a, b) => b.lastActivityAt - a.lastActivityAt)
   const limit = options.limit ?? 100
   return limit > 0 ? items.slice(0, limit) : items
 }

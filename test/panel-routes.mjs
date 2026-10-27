@@ -65,6 +65,7 @@ const deps = {
   baseCwd: projectDir,
   conversationsDir: join(scratch, 'conversations'),
   annotationsDir: join(scratch, 'annotations'),
+  summariesDbPath: join(scratch, 'conversation_summaries.db'),
   prefsPath: join(scratch, 'panel.json'),
   loadRecords: () => ({
     'test-session::agy::1': { conversationId: 'fake-conversation-0001', cwd: projectDir, label: 'fake', createdAt: 1 },
@@ -86,6 +87,7 @@ assert.deepEqual([...routes.keys()].sort(), [
   '/api-agy/cancel',
   '/api-agy/continue',
   '/api-agy/conversations',
+  '/api-agy/history',
   '/api-agy/prefs',
   '/api-agy/run',
   '/api-agy/running',

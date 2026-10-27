@@ -1,4 +1,5 @@
 import type { TaskRecord } from './index.js';
+import type { ConversationSummary } from './agy-summaries.js';
 /** One row the panel renders. */
 export interface ConversationItem {
     /** Registry key, kept for diagnostics only. */
@@ -10,6 +11,14 @@ export interface ConversationItem {
     model: string | null;
     /** False when the project directory is gone (unmounted drive, deleted folder). */
     cwdExists: boolean;
+    /** When agy saw the conversation change last — falls back to `createdAt`. */
+    lastActivityAt: number;
+    /** agy's own state, e.g. `CASCADE_RUN_STATUS_IDLE`. */
+    status: string | null;
+    /** How many steps the conversation has, when agy counted them. */
+    stepCount: number;
+    /** One line of the conversation's last exchange. */
+    preview: string | null;
 }
 export interface ListConversationsOptions {
     records: Record<string, TaskRecord>;
@@ -19,6 +28,8 @@ export interface ListConversationsOptions {
     annotationsDir: string;
     /** Conversation ids (or registry keys) the user hid from the panel. */
     hidden?: readonly string[];
+    /** What agy knows about the conversations, keyed by conversation id. */
+    summaries?: ReadonlyMap<string, ConversationSummary>;
     limit?: number;
 }
 /** Last `gemini-*` id appearing in the conversation database. */

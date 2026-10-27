@@ -16,6 +16,8 @@ export interface AgyPanelDeps {
     baseCwd: string;
     conversationsDir: string;
     annotationsDir: string;
+    /** `~/.gemini/antigravity-cli/conversation_summaries.db` */
+    summariesDbPath: string;
     /** Where the panel keeps hidden conversation ids. */
     prefsPath: string;
     loadRecords(): Record<string, TaskRecord>;
