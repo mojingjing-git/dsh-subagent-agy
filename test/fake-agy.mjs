@@ -90,6 +90,24 @@ Available Commands:
   process.exit(0)
 }
 
+// `agy models`: the catalogue behind `model: auto`. The real call is a ~10.7 s
+// network round trip; the fake answers immediately so tests stay fast.
+// FAKE_AGY_MODELS can replace the payload to model an empty or renamed catalogue.
+if (argv.includes('models')) {
+  const payload =
+    process.env.FAKE_AGY_MODELS ??
+    [
+      'gemini-3.8-flash-high\tGemini 3.8 Flash (High)',
+      'gemini-3.8-flash-medium\tGemini 3.8 Flash (Medium)',
+      'gemini-3.8-flash-low\tGemini 3.8 Flash (Low)',
+      'claude-sonnet-4-6\tClaude Sonnet 4.6 (Thinking)',
+      'claude-opus-4-6-thinking\tClaude Opus 4.6 (Thinking)',
+      'gpt-oss-120b-medium\tGPT-OSS 120B (Medium)',
+    ].join('\n')
+  if (payload.length > 0) process.stdout.write(`${payload}\n`)
+  process.exit(0)
+}
+
 const scenario = process.env.FAKE_AGY_SCENARIO ?? 'success'
 const format = typeof flags['output-format'] === 'string' ? flags['output-format'] : 'text'
 const conversation = typeof flags.conversation === 'string' ? flags.conversation : undefined

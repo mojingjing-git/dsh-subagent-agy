@@ -18,10 +18,11 @@
 // So: probe for a real peer declaration, then build accordingly. Same output
 // either way — the shim only adds type information, it emits nothing.
 import { spawnSync } from 'node:child_process'
-import { readFileSync } from 'node:fs'
+import { copyFileSync, existsSync, mkdirSync, readFileSync } from 'node:fs'
 import { createRequire } from 'node:module'
 import { dirname, join, resolve } from 'node:path'
 import { fileURLToPath } from 'node:url'
+import { runInNewContext } from 'node:vm'
 
 const root = resolve(dirname(fileURLToPath(import.meta.url)), '..')
 const require = createRequire(join(root, 'package.json'))
@@ -77,4 +78,60 @@ const result = spawnSync(process.execPath, [tscBin, '-p', config], {
   cwd: root,
   stdio: 'inherit',
 })
-process.exit(result.status ?? 1)
+if ((result.status ?? 1) !== 0) process.exit(result.status ?? 1)
+
+// The web bundle (`dsh.client` → `exports["./client"]`) is hand-written plain
+// JS in the loader's UMD shape — nothing to compile, but it must land in lib/
+// so the published tarball carries it.
+const clientSrc = join(root, 'src', 'client.js')
+if (existsSync(clientSrc)) {
+  mkdirSync(join(root, 'lib'), { recursive: true })
+  const clientOut = join(root, 'lib', 'client.js')
+  copyFileSync(clientSrc, clientOut)
+  process.stdout.write('build: copied src/client.js → lib/client.js\n')
+
+  // Evaluate the copied bundle the way the web loader does: as a classic script,
+  // with no `module` / `exports` / `require`. A bundle missing its CommonJS
+  // shell must fail here, not on the next DSH boot — patched.9 shipped exactly
+  // that white screen (`web boot: 1 entry did not activate`).
+  let captured
+  try {
+    runInNewContext(
+      readFileSync(clientOut, 'utf8'),
+      {
+        window: { __ModuleLoader__: { load: (module) => { captured = module } } },
+        fetch: () => Promise.reject(new Error('no network during build')),
+        setInterval,
+        clearInterval,
+        setTimeout,
+        clearTimeout,
+        console,
+      },
+      { filename: clientOut },
+    )
+  } catch (error) {
+    process.stderr.write(`build: lib/client.js does not evaluate as a classic script: ${String(error)}\n`)
+    process.exit(1)
+  }
+  const pkg = JSON.parse(readFileSync(join(root, 'package.json'), 'utf8'))
+  if (captured === undefined || captured.id !== pkg.name || typeof captured.factory !== 'function') {
+    process.stderr.write('build: lib/client.js did not register through window.__ModuleLoader__\n')
+    process.exit(1)
+  }
+  let clientExports
+  try {
+    clientExports = captured.factory((id) => {
+      if (id === 'react') return {}
+      throw new Error(`unexpected require: ${id}`)
+    })
+  } catch (error) {
+    process.stderr.write(`build: lib/client.js factory threw: ${String(error)}\n`)
+    process.exit(1)
+  }
+  if (clientExports === null || typeof clientExports !== 'object' || typeof clientExports.apply !== 'function') {
+    process.stderr.write('build: lib/client.js factory did not return { name, inject, apply }\n')
+    process.exit(1)
+  }
+  process.stdout.write('build: lib/client.js loads as a classic script with a CommonJS shell\n')
+}
+process.exit(0)

@@ -409,13 +409,18 @@ await testCase('background/cancel', { scenario: 'slow-stream' }, async (ctl) => 
 //      undefined and the wake is discarded just the same.
 // The tool description must also stop telling the model to poll every 60s,
 // since that advice is what produced the polling loop in the first place.
-await testCase('wake/owner-is-exec-agent', { scenario: 'success' }, async (ctl) => {
+await testCase('wake/owner-is-the-exec-agents-session-id', { scenario: 'success' }, async (ctl) => {
   await ctl.callTool('antigravity', { description: 'wake owner', prompt: 'hi', background: true })
   const owners = [...ctl.jobOwners]
   check('background job registered an owner', owners.length > 0, JSON.stringify(owners))
-  check('owner is the exec agent (has a session id)', owners[0]?.session?.id === 'test-session', JSON.stringify(owners[0]?.session))
-  check('owner is not the provider stub agent', owners[0] === ctl.lastToolAgent, 'owner identity differs from exec.agent')
-  check('owner resolves through agents.get', owners[0] !== undefined && owners[0].id === 'test-session', String(owners[0]?.id))
+  // dsh-jobs-local resolves the owner with `agents.get(session)`, so the value
+  // must be the session id STRING. Handing it the Agent object throws
+  // `session "[object Object]" has no live agent` and every background call
+  // fails — which is exactly what shipped in patched.6.
+  check('owner is a session id string', typeof owners[0] === 'string', `${typeof owners[0]}: ${JSON.stringify(owners[0])}`)
+  check('owner is this session', owners[0] === 'test-session', String(owners[0]))
+  check('owner is not the exec agent object', owners[0] !== ctl.lastToolAgent, 'owner is the Agent object, not its id')
+  check('owner resolves through agents.get', ctl.liveAgents.get(owners[0]) !== undefined, String(owners[0]))
 })
 
 await testCase('wake/description-does-not-ask-for-polling', { scenario: 'success' }, async (ctl) => {

@@ -113,6 +113,8 @@ export interface TaskRecord {
     cwd: string;
     label: string;
     createdAt: number;
+    /** Model this run used — written by the panel-era builds; older entries lack it. */
+    model?: string;
 }
 /** Minimal logger shape for registry persistence (ctx.logger is assignable). */
 export interface RegistryLogger {
@@ -156,6 +158,8 @@ export interface AntigravityBackgroundHandle {
     }>;
     /** Incremental output delta since the previous read. */
     readOutput: () => string;
+    /** Last tool name agy reported for this run, when the stream carries one. */
+    tool?: () => string | null;
 }
 /** One in-flight run tracked for the tasks/cancel tool layer (foreground or background). */
 export interface ActiveRunInfo {
@@ -164,5 +168,17 @@ export interface ActiveRunInfo {
     startedAt: number;
     background: boolean;
     cancel: () => void;
+}
+/** What the sidebar panel hands to the provider to resume one conversation. */
+export interface PanelRunInput {
+    /** Synthetic session id: only used for run ids and task records. */
+    sessionId: string;
+    /** Session cwd `spawnPlan` inherits from; the run's own cwd comes from the registry. */
+    baseCwd: string;
+    label: string;
+    prompt: string;
+    conversationId: string;
+    /** Registry-recorded project directory of the original run. */
+    cwd: string;
 }
 export declare function apply(ctx: Context, config: Config): void;

@@ -105,6 +105,19 @@ export async function bootPlugin(overrides = {}, options = {}) {
   // on the record and the `settled` event carries it. A producer that omits
   // `owner` still runs, but its completion is silently dropped.
   const jobOwners = []
+  // Session ids that currently have a live Agent, as `ctx.get('agents').get()`
+  // would see them. `jobs-local.resolveOwner()` consults this registry, so a
+  // registration whose owner is not in here is rejected before the job exists.
+  const knownOwners = new Set()
+  // Mirror of `ctx.get('agents')`: `get()` takes a session id and returns the
+  // live Agent, or undefined. `dsh-jobs-local.resolveOwner()` is the only real
+  // consumer, and it is what turns a wrong owner type into a hard throw.
+  const liveAgents = new Map()
+  const agentsService = {
+    get(session) {
+      return typeof session === 'string' ? liveAgents.get(session) : undefined
+    },
+  }
   const jobsService = {
     events: {
       // Mirrors `ctx.jobs.events.subscribe({ owners: 'scope' }, fn)`: the
@@ -116,6 +129,24 @@ export async function bootPlugin(overrides = {}, options = {}) {
     start(spec) {
       if (typeof spec.kind !== 'string' || spec.kind.length === 0) throw new Error('invalid job kind: expected a non-empty string')
       if (typeof spec.label !== 'string' || spec.label.length === 0) throw new Error('invalid job label: expected a non-empty string')
+      // Real `dsh-jobs-local.start()` runs `spec.owner` through
+      // `resolveOwner()`, which resolves it as a *session id*:
+      //   `agents.get(session)` -> throw `session "[object Object]" has no live agent`
+      // when handed an Agent object. This stub used to accept anything, so the
+      // plugin's `owner: parent` shipped green offline and failed on the first
+      // real `background: true` call. Reproduce the real check here.
+      if (spec.owner !== undefined) {
+        if (typeof spec.owner !== 'string') {
+          throw new Error(
+            `session "${String(spec.owner)}" has no live agent (background job owner must be live)`,
+          )
+        }
+        if (!knownOwners.has(spec.owner)) {
+          throw new Error(
+            `session "${spec.owner}" has no live agent (background job owner must be live)`,
+          )
+        }
+      }
       jobOwners.push(spec.owner)
       let id
       do id = `${spec.kind}-${randomUUID().replaceAll('-', '').slice(0, 16)}`
@@ -277,6 +308,7 @@ export async function bootPlugin(overrides = {}, options = {}) {
     },
     get(name) {
       if (name === 'jobs') return jobsService
+      if (name === 'agents') return agentsService
       return undefined
     },
     subprocess,
@@ -316,6 +348,10 @@ export async function bootPlugin(overrides = {}, options = {}) {
       header: { cwd: options.sessionCwd ?? workdir },
     },
   }
+  // Publish the stand-in as the one live agent for this session, so the
+  // owner check in `jobs.start()` behaves like the real registry.
+  knownOwners.add(agent.id)
+  liveAgents.set(agent.id, agent)
 
   /**
    * Assert a value satisfies a tool's declared output schema, the way the real
@@ -408,6 +444,7 @@ export async function bootPlugin(overrides = {}, options = {}) {
     callTool,
     render,
     jobOwners,
+    liveAgents,
     /** The exec.agent the most recent callTool used (what the plugin saw). */
     get lastToolAgent() {
       return lastToolAgent

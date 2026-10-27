@@ -75,6 +75,16 @@ import type { ContentBlock } from '@deepseek-ai/dsh-llm'
 import { dirname, isAbsolute, join } from 'node:path'
 import { homedir, tmpdir } from 'node:os'
 import { mkdirSync, readFileSync, renameSync, rmSync, statSync, writeFileSync } from 'node:fs'
+import { familyOfModel, spawnUsage, UsageReader } from './agy-usage.js'
+import {
+  MODEL_CACHE_TTL_MS,
+  parseModels,
+  pickDeepestFlash,
+  readModelCatalog,
+  type ModelCatalog,
+  writeModelCatalog,
+} from './agy-models.js'
+import { registerAgyPanel } from './agy-panel.js'
 
 // ── DSH 0.2.1 compatibility shims (v1) ──────────────────────────────────────
 // Upstream imported `resolveChildCwd` and `validateConfiguredCwd` from
@@ -154,6 +164,12 @@ const MAX_RUN_RECORDS = 64
 const MAX_ARGV_PROMPT_CHARS = 30_000
 /** Bound for the one-time `agy help` flag probe. */
 const PROBE_TIMEOUT_MS = 10_000
+/**
+ * Bound for `agy models`. It is a network call, not a local usage dump: agy
+ * 1.4.7 takes ~10.7 s here, so the flag probe's 10 s ceiling would abort a
+ * healthy run halfway through.
+ */
+const MODEL_PROBE_TIMEOUT_MS = 30_000
 /** `--effort` values agy 1.4.6 documents (v5; an unknown value is warned, not rejected). */
 const EFFORT_LEVELS = ['low', 'medium', 'high', 'xhigh', 'max']
 /**
@@ -180,7 +196,12 @@ export const Config = z.object({
   followupToolName: z.string().default('antigravity_followup'),
   /** Executable to resolve (bare name on PATH or absolute path). */
   command: z.string().default('agy'),
-  /** `--model <slug>`; empty omits the flag (agy's default model). */
+  /**
+   * `--model <slug>`. Empty omits the flag (agy's default model). The special
+   * value `auto` asks the plugin for the newest Gemini Flash at its highest
+   * thinking level, discovered from `agy models` and cached for a day; until
+   * the first probe finishes — or when it fails — `auto` also omits the flag.
+   */
   model: z.string().default(''),
   /** `--effort`; one of low | medium | high | xhigh | max; empty omits the flag. */
   effort: z.string().default(''),
@@ -345,6 +366,8 @@ export interface TaskRecord {
   cwd: string
   label: string
   createdAt: number
+  /** Model this run used — written by the panel-era builds; older entries lack it. */
+  model?: string
 }
 
 /** Minimal logger shape for registry persistence (ctx.logger is assignable). */
@@ -545,6 +568,7 @@ export function loadTaskRegistry(config: Config, logger?: RegistryLogger): Recor
         cwd: entry.cwd,
         label: typeof entry.label === 'string' ? entry.label : '',
         createdAt: entry.createdAt,
+        ...(typeof entry.model === 'string' && entry.model.length > 0 ? { model: entry.model } : {}),
       }
     } else {
       dropped += 1
@@ -900,6 +924,8 @@ export interface AntigravityBackgroundHandle {
   done: Promise<{ status: 'killed' | 'completed' | 'failed'; detail: string }>
   /** Incremental output delta since the previous read. */
   readOutput: () => string
+  /** Last tool name agy reported for this run, when the stream carries one. */
+  tool?: () => string | null
 }
 
 /** One in-flight run tracked for the tasks/cancel tool layer (foreground or background). */
@@ -909,6 +935,19 @@ export interface ActiveRunInfo {
   startedAt: number
   background: boolean
   cancel: () => void
+}
+
+/** What the sidebar panel hands to the provider to resume one conversation. */
+export interface PanelRunInput {
+  /** Synthetic session id: only used for run ids and task records. */
+  sessionId: string
+  /** Session cwd `spawnPlan` inherits from; the run's own cwd comes from the registry. */
+  baseCwd: string
+  label: string
+  prompt: string
+  conversationId: string
+  /** Registry-recorded project directory of the original run. */
+  cwd: string
 }
 
 /** Everything both the foreground and the background path need before spawning. */
@@ -949,6 +988,10 @@ class AntigravitySubagentProvider implements SubagentProvider {
   private runSeq = 0
   /** Live in-flight runs (foreground + background), for the tasks/cancel tools. */
   private readonly activeRuns = new Map<string, ActiveRunInfo>()
+  /** Model catalogue behind `model: auto`; undefined until the cache or probe lands. */
+  private modelCatalog: ModelCatalog | undefined
+  /** Single-flight guard: startup, panel and the first run must share one probe. */
+  private modelCatalogLoading: Promise<void> | undefined
 
   constructor(
     private readonly ctx: Context,
@@ -993,6 +1036,105 @@ class AntigravitySubagentProvider implements SubagentProvider {
     return true
   }
 
+  /**
+   * Everything a side probe needs to launch agy exactly like a run would:
+   * the resolved binary plus the scrubbed/proxied environment. The panel's
+   * usage probe uses this so it never depends on the host process PATH.
+   */
+  async probeEnvironment(): Promise<{ exe: string; env: Record<string, string>; cwd: string }> {
+    const { config } = this
+    const env = { ...scrubbedParentEnv(), ...config.env }
+    applyProxyEnv(env, resolveProxyUrl(config))
+    const exe = await this.resolveCommandPath(env, new AbortController().signal)
+    return { exe, env, cwd: this.configuredCwd ?? process.cwd() }
+  }
+
+  /**
+   * Load and (when stale) refresh the `agy models` catalogue used by
+   * `model: auto`. Called once from `apply()` without awaiting: the probe is a
+   * ~11 s network call and DSH boot must not wait for it. Concurrent callers
+   * share one probe.
+   */
+  async warmModelCatalog(): Promise<void> {
+    if (this.modelCatalogLoading !== undefined) return this.modelCatalogLoading
+    this.modelCatalogLoading = this.loadModelCatalog()
+    try {
+      await this.modelCatalogLoading
+    } finally {
+      this.modelCatalogLoading = undefined
+    }
+  }
+
+  /**
+   * The model flag this run should use. `auto` resolves through the catalogue;
+   * everything else is passed through verbatim, and an empty catalogue leaves
+   * the flag off (agy's own default) rather than guessing.
+   */
+  private resolvedModel(): string {
+    const configured = this.config.model.trim()
+    if (configured.toLowerCase() !== 'auto') return configured
+    return this.modelCatalog?.chosen ?? ''
+  }
+
+  private modelCacheFile(): string {
+    return join(pluginBaseDir(), 'agy-models.json')
+  }
+
+  private async loadModelCatalog(): Promise<void> {
+    const file = this.modelCacheFile()
+    const cached = readModelCatalog(file)
+    if (cached !== undefined) this.modelCatalog = cached
+    if (cached !== undefined && Date.now() - cached.fetchedAt < MODEL_CACHE_TTL_MS) return
+    try {
+      const { exe, env, cwd } = await this.probeEnvironment()
+      const text = await this.captureModels(exe, env, cwd)
+      const models = parseModels(text)
+      if (models.length === 0) {
+        this.ctx.logger.warn(
+          `${PREFIX}: \`agy models\` listed no models; keeping ${cached === undefined ? 'agy default model selection' : 'the cached catalogue'}`,
+        )
+        return
+      }
+      const chosen = pickDeepestFlash(models)
+      const catalog: ModelCatalog = { fetchedAt: Date.now(), chosen, models }
+      this.modelCatalog = catalog
+      writeModelCatalog(file, catalog)
+      this.ctx.logger.info(
+        `${PREFIX}: model catalogue refreshed (${models.length} models, auto → ${chosen.length > 0 ? chosen : 'agy default'})`,
+      )
+    } catch (error) {
+      this.ctx.logger.warn(
+        `${PREFIX}: \`agy models\` probe failed (${error instanceof Error ? error.message : String(error)}); ${cached === undefined ? 'model: auto will omit --model' : 'using the cached catalogue'}`,
+      )
+    }
+  }
+
+  /** Run `agy models` and return its combined output, bounded by a watchdog. */
+  private async captureModels(exe: string, env: Record<string, string>, cwd: string): Promise<string> {
+    const controller = new AbortController()
+    const timer = setTimeout(() => controller.abort(), MODEL_PROBE_TIMEOUT_MS)
+    try {
+      const handle = this.ctx.subprocess.spawn({
+        argv: [exe, 'models'],
+        cwd,
+        stdio: {
+          stdin: 'ignore',
+          stdout: { maxBytes: 64 << 10 },
+          stderr: { maxBytes: 32 << 10 },
+        },
+        graceMs: this.config.disposeGraceMs,
+        signal: controller.signal,
+        env,
+      })
+      await handle.done
+      return (
+        (handle.collected?.stdout?.readFrom(0).text ?? '') + (handle.collected?.stderr?.readFrom(0).text ?? '')
+      )
+    } finally {
+      clearTimeout(timer)
+    }
+  }
+
   /** Terminate every in-flight run (plugin stop/update): returns how many were cancelled. */
   terminateAllActive(): number {
     let count = 0
@@ -1008,9 +1150,21 @@ class AntigravitySubagentProvider implements SubagentProvider {
     return `${Date.now().toString(36)}-${this.runSeq.toString(36)}`
   }
 
-  private remember(runId: string, conversationId: string | undefined, cwd: string, label: string): void {
+  private remember(
+    runId: string,
+    conversationId: string | undefined,
+    cwd: string,
+    label: string,
+    model: string,
+  ): void {
     if (conversationId === undefined || conversationId.length === 0) return
-    this.runRecords.set(runId, { conversationId, cwd, label, createdAt: Date.now() })
+    this.runRecords.set(runId, {
+      conversationId,
+      cwd,
+      label,
+      createdAt: Date.now(),
+      ...(model.length > 0 ? { model } : {}),
+    })
     if (this.runRecords.size > MAX_RUN_RECORDS) {
       const oldest = [...this.runRecords.entries()].sort((a, b) => a[1].createdAt - b[1].createdAt)[0]
       if (oldest !== undefined) this.runRecords.delete(oldest[0])
@@ -1324,7 +1478,8 @@ class AntigravitySubagentProvider implements SubagentProvider {
     }
     const baseArgv: string[] = [exe, ...promptArgv]
     if (support.durationTimeout || support.bareTimeout) baseArgv.push('--print-timeout', printTimeout)
-    if (config.model.length > 0) baseArgv.push('--model', config.model)
+    const model = this.resolvedModel()
+    if (model.length > 0) baseArgv.push('--model', model)
     if (config.effort.length > 0) {
       // v5 — agy 1.4.6 accepts low | medium | high | xhigh | max. The old
       // three-value whitelist rejected `xhigh`/`max` outright, which made two
@@ -1364,7 +1519,7 @@ class AntigravitySubagentProvider implements SubagentProvider {
       releasePromptFile,
       id: `${request.parent.session.id}::agy::${this.nextRunId()}` as unknown as SessionId,
       label: request.label ?? 'antigravity task',
-      model: config.model,
+      model,
       prompt: promptText,
     }
   }
@@ -1550,7 +1705,7 @@ class AntigravitySubagentProvider implements SubagentProvider {
         if (parsed !== undefined) {
           const conversation = parsed.conversation_id
           if (parsed.status === 'SUCCESS' && typeof parsed.response === 'string') {
-            this.remember(plan.id, conversation, plan.childCwd, plan.label)
+            this.remember(plan.id, conversation, plan.childCwd, plan.label, plan.model)
             return { output: textBlocks(parsed.response), stopReason: 'completed', transcript: transcriptPath }
           }
           const detail = this.maybeAutoLogin(
@@ -1558,7 +1713,7 @@ class AntigravitySubagentProvider implements SubagentProvider {
               ? parsed.error
               : stderr.trim() || `agy exited with code ${String(outcome.exitCode)}`,
           )
-          this.remember(plan.id, conversation, plan.childCwd, plan.label)
+          this.remember(plan.id, conversation, plan.childCwd, plan.label, plan.model)
           return { output: textBlocks(detail), stopReason: 'error', transcript: transcriptPath }
         }
 
@@ -1646,11 +1801,44 @@ class AntigravitySubagentProvider implements SubagentProvider {
    * done. The final read carries a `[task: ...]` line for follow-ups.
    */
   async startBackground(request: SubagentStartRequest, extraDirs: readonly string[]): Promise<AntigravityBackgroundHandle> {
-    const { ctx, config } = this
+    const { config } = this
     const plan = await this.spawnPlan(request as ResolvedSubagentStartRequest, undefined, undefined, extraDirs, config.backgroundTimeoutMs)
+    return this.runBackgroundPlan(plan, config.backgroundTimeoutMs)
+  }
+
+  /**
+   * Panel entry point: resume one agy conversation with no Agent and no job
+   * around it. A sidebar click has no model-facing tool call to hang a request
+   * off, so this synthesises the two fields `spawnPlan` reads (`session.id` and
+   * `session.header.cwd`). The caller never supplies a cwd — the route takes it
+   * from the registry — so this cannot be used to run agy in an arbitrary
+   * directory.
+   */
+  async startPanelRun(input: PanelRunInput): Promise<AntigravityBackgroundHandle> {
+    const { config } = this
+    const abort = new AbortController()
+    const parent = {
+      session: { id: input.sessionId as SessionId, header: { cwd: input.baseCwd } },
+    } as unknown as Agent
+    const request = {
+      label: input.label,
+      prompt: [{ type: 'text' as const, text: input.prompt }],
+      parent,
+      signal: abort.signal,
+    } as ResolvedSubagentStartRequest
+    // The signal is only borrowed by spawnPlan's executable probe.
+    const plan = await this.spawnPlan(request, input.conversationId, input.cwd, [], config.backgroundTimeoutMs)
+      .finally(() => abort.abort())
+    // spawnPlan validates --conversation support but only the foreground path
+    // appends the flag itself; the background argv is plan.baseArgv verbatim.
+    plan.baseArgv.push('--conversation', input.conversationId)
+    return this.runBackgroundPlan(plan, config.backgroundTimeoutMs)
+  }
+
+  private runBackgroundPlan(plan: SpawnPlan, ceiling: number): AntigravityBackgroundHandle {
+    const { ctx, config } = this
     const id = plan.id
     const label = plan.label
-    const ceiling = config.backgroundTimeoutMs
 
     let timedOut = false
     let visible = ''
@@ -1665,6 +1853,8 @@ class AntigravitySubagentProvider implements SubagentProvider {
     let handle: SubprocessHandle | undefined
     let watchdog: NodeJS.Timeout | undefined
     let cancelledByRequest = false
+    /** Last tool agy announced — the panel's "running tool" line. */
+    let lastTool: string | null = null
     const controller = new AbortController()
 
     /** Append to the live-output window, dropping the oldest bytes past MAX_VISIBLE_BYTES. */
@@ -1713,7 +1903,8 @@ class AntigravitySubagentProvider implements SubagentProvider {
       if (event === 'step_update') {
         const payload = (obj as { step_update?: unknown }).step_update
         if (payload !== null && typeof payload === 'object') {
-          const p = payload as { text_delta?: unknown; state?: unknown; step_type?: unknown }
+          const p = payload as { text_delta?: unknown; state?: unknown; step_type?: unknown; tool_name?: unknown }
+          if (typeof p.tool_name === 'string' && p.tool_name.length > 0) lastTool = p.tool_name
           const delta = p.text_delta
           if (typeof delta === 'string' && delta.length > 0) {
             sawDelta = true
@@ -1813,7 +2004,7 @@ class AntigravitySubagentProvider implements SubagentProvider {
         disarmWatchdog()
         plan.releasePromptFile()
       }
-      this.remember(id, conversationId, plan.childCwd, label)
+      this.remember(id, conversationId, plan.childCwd, label, plan.model)
       if (conversationId !== undefined && this.runRecords.has(id)) {
         const record = this.runRecords.get(id) as TaskRecord
         await updateTaskRegistry(config, (records) => {
@@ -1850,7 +2041,7 @@ class AntigravitySubagentProvider implements SubagentProvider {
 
     // Track for the tasks/cancel tools; released when the job settles.
     this.trackActive(id, { label, cwd: plan.childCwd, startedAt: Date.now(), background: true, cancel }, done)
-    return { cancel, done, readOutput }
+    return { cancel, done, readOutput, tool: () => lastTool }
   }
 }
 
@@ -1950,6 +2141,15 @@ export function apply(ctx: Context, config: Config): void {
     `${PREFIX}: provider ${config.providerName}`,
   )
 
+  // `model: auto` needs `agy models`, which is a ~11 s network call. Warm it in
+  // the background so boot never waits; until it lands (or if it fails) `auto`
+  // simply omits `--model` and agy's own default applies.
+  void provider.warmModelCatalog().catch((error: unknown) => {
+    ctx.logger.warn(
+      `${PREFIX}: model catalogue warm-up failed: ${error instanceof Error ? error.message : String(error)}`,
+    )
+  })
+
   // Terminate every in-flight agy process when the plugin stops or updates —
   // they would otherwise leak as orphans no other provider can manage.
   ctx.effect(
@@ -1963,6 +2163,31 @@ export function apply(ctx: Context, config: Config): void {
     },
     `${PREFIX}: terminate active runs on dispose`,
   )
+
+  // ── Sidebar panel: quotas + conversation list + resume ────────────────────
+  // Routes attach through ctx.inject because `webServer` is an optional service
+  // that mounts after the plugin; a direct ctx.get here would be undefined.
+  const usageReader = new UsageReader({
+    badgeFamily: familyOfModel(config.model),
+    cachePath: join(pluginBaseDir(), 'agy-usage-cache.json'),
+    runner: async () => {
+      const probe = await provider.probeEnvironment()
+      return await spawnUsage(probe.exe, { env: probe.env, cwd: probe.cwd })
+    },
+  })
+  const antigravityHome = join(homedir(), '.gemini', 'antigravity-cli')
+  registerAgyPanel(ctx, {
+    sessionId: 'panel:agy',
+    baseCwd: configuredCwd ?? process.cwd(),
+    conversationsDir: join(antigravityHome, 'conversations'),
+    annotationsDir: join(antigravityHome, 'annotations'),
+    prefsPath: join(pluginBaseDir(), 'agy-panel.json'),
+    loadRecords: () => loadTaskRegistry(config, ctx.logger),
+    listActive: () => provider.listActive(),
+    peekUsage: () => usageReader.peek(),
+    readUsage: (force) => usageReader.read(force),
+    startRun: (input) => provider.startPanelRun(input),
+  })
 
   // New-task tool (effect-scoped like the provider).
   ctx.effect(
@@ -2046,7 +2271,12 @@ export function apply(ctx: Context, config: Config): void {
                 jobId = jobs.start({
                   kind: 'antigravity',
                   label: args.description,
-                  ...(parent !== undefined ? { owner: parent } : {}),
+                  // `owner` is a SessionId, not the Agent object: dsh-jobs-local
+                  // resolves it with `agents.get(session)` and throws
+                  // `session "[object Object]" has no live agent` when handed an
+                  // Agent. That throw also made every `background: true` call
+                  // fail, which is why callers stopped using the tool.
+                  owner: parent.session.id,
                   run: () => bg,
                 })
               } catch (error) {
