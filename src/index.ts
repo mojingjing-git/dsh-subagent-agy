@@ -746,7 +746,7 @@ function isUnknownFlagError(stderr: string): boolean {
  * @param plan - the run plan.
  * @returns one NDJSON line, or '' when the header cannot be serialized.
  */
-function transcriptHeader(plan: SpawnPlan): string {
+function transcriptHeader(plan: SpawnPlan, status?: 'cancelled' | 'timeout'): string {
   try {
     return (
       JSON.stringify({
@@ -756,6 +756,7 @@ function transcriptHeader(plan: SpawnPlan): string {
         cwd: plan.childCwd,
         model: plan.model,
         prompt: plan.prompt,
+        ...(status !== undefined ? { status } : {}),
       }) + '\n'
     )
   } catch {
@@ -1759,7 +1760,22 @@ class AntigravitySubagentProvider implements SubagentProvider {
     // field on the attempt's result is dropped exactly when it is most useful:
     // a cancelled or failed run is when you want the transcript path. Re-attach
     // it here (best effort — a run that never wrote one stays undefined).
-    const result = settled.then((value) => (transcriptPath === undefined ? value : { ...value, transcript: transcriptPath }))
+    const result = settled.then((value) => {
+      const terminal = value.stopReason === 'aborted' || value.stopReason === 'error'
+      if (transcriptPath === undefined && terminal && config.transcript !== false) {
+        // A cancelled or timed-out run can reject `attempt` itself (a killed
+        // stream rejects handle.done before attempt reaches its own checks),
+        // skipping any write inside attempt — persist what was collected here
+        // so these runs leave the same evidence a failed run does. Nothing
+        // streamed (cancelled before the spawn) → nothing worth persisting.
+        const raw = readStdout(current?.handle ?? {})
+        if (raw.length > 0) {
+          const status = value.stopReason === 'aborted' ? 'cancelled' : timedOut ? 'timeout' : undefined
+          transcriptPath = writeTranscript(config, plan.id, transcriptHeader(plan, status) + raw)
+        }
+      }
+      return transcriptPath === undefined ? value : { ...value, transcript: transcriptPath }
+    })
     // Track for the tasks/cancel tools; released when the result settles.
     this.trackActive(
       plan.id,

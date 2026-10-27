@@ -100,6 +100,20 @@ function transcriptOf(transcriptDir, task) {
   return file === undefined ? [] : readTranscript(file)
 }
 
+/** The one transcript a single-run case wrote, by the index (task ids carry a random suffix). */
+function soleTranscript(transcriptDir) {
+  const raw = readIfExists(join(transcriptDir, 'index.json'))
+  if (raw === undefined) return undefined
+  let index
+  try {
+    index = JSON.parse(raw)
+  } catch {
+    return undefined
+  }
+  if (!Array.isArray(index) || index.length === 0) return undefined
+  return index[0]?.file
+}
+
 /** Parse the plugin's NDJSON transcript into event objects. */
 function readTranscript(path) {
   const text = readIfExists(path)
@@ -230,7 +244,7 @@ await testCase('auth-error/reports-auth', { scenario: 'auth-error' }, async (ctl
 })
 
 // ── 6. Timeout + cancellation (the TDZ regression) ──────────────────────────
-await testCase('hang/timeout-settles', { scenario: 'hang', config: { printTimeoutMs: 1200 } }, async (ctl) => {
+await testCase('hang/timeout-settles', { scenario: 'hang', config: { printTimeoutMs: 1200 } }, async (ctl, { transcriptDir }) => {
   const started = Date.now()
   let threw
   try {
@@ -248,11 +262,23 @@ await testCase('hang/timeout-settles', { scenario: 'hang', config: { printTimeou
   // Budget: printTimeoutMs 1200 + the 5000 ms minimum watchdog margin + the
   // flag probe (one `help` + one `--print-timeout` probe) + slack.
   check('the watchdog fired promptly', elapsed < 25_000, `${elapsed}ms`)
+  const timeoutFile = soleTranscript(transcriptDir)
+  check('a timed-out run still writes its transcript', typeof timeoutFile === 'string', String(timeoutFile))
+  if (typeof timeoutFile === 'string') {
+    const firstLine = JSON.parse(readIfExists(timeoutFile)?.split('\n')[0] ?? '{}')
+    check('the timeout transcript is marked and carries the prompt', firstLine.status === 'timeout' && typeof firstLine.prompt === 'string', JSON.stringify(firstLine))
+  }
 })
 
-await testCase('slow-stream/cancel', { scenario: 'slow-stream' }, async (ctl) => {
+await testCase('slow-stream/cancel', { scenario: 'slow-stream' }, async (ctl, { transcriptDir }) => {
   const controller = new AbortController()
   const pending = ctl.callTool('antigravity', { description: 'cancel me', prompt: 'slow' }, { signal: controller.signal })
+  // Abort mid-run, not during the flag probe: wait until the real run spawns
+  // (the probe spawns never carry --model), then let init and a few chunks land.
+  const isMainRun = (h) => h.argv.includes('--model') && (h.argv.includes('--print') || h.argv.includes('-p'))
+  for (let i = 0; i < 100 && !ctl.subprocess.spawned.some(isMainRun); i += 1) {
+    await new Promise((r) => setTimeout(r, 50))
+  }
   await new Promise((r) => setTimeout(r, 400))
   controller.abort()
   let threw
@@ -264,6 +290,12 @@ await testCase('slow-stream/cancel', { scenario: 'slow-stream' }, async (ctl) =>
   check('cancelled run rejects', threw !== undefined, String(threw?.message ?? 'resolved'))
   check('cancel does not throw the TDZ error', !/Cannot access 'transcriptPath'/.test(String(threw?.message ?? '')), String(threw?.message))
   check('cancel is reported as a cancellation', /cancel/i.test(String(threw?.message ?? '')), String(threw?.message))
+  const cancelFile = soleTranscript(transcriptDir)
+  check('a cancelled run still writes its transcript', typeof cancelFile === 'string', String(cancelFile))
+  if (typeof cancelFile === 'string') {
+    const firstLine = JSON.parse(readIfExists(cancelFile)?.split('\n')[0] ?? '{}')
+    check('the cancel transcript is marked and carries the prompt', firstLine.status === 'cancelled' && typeof firstLine.prompt === 'string', JSON.stringify(firstLine))
+  }
 })
 
 // ── 7. cwd handling ─────────────────────────────────────────────────────────
