@@ -579,6 +579,25 @@ export function loadTaskRegistry(config: Config, logger?: RegistryLogger): Recor
   return records
 }
 
+/**
+ * Replace `filePath` with `data` in one atomic step: write a unique sibling
+ * temp file, then rename it over the target. A crash mid-write leaves the old
+ * file intact (the temp is discarded), so readers never observe a torn file —
+ * the transcript index resolves every lookup, so a torn index would take all
+ * of them down at once. The temp name embeds the pid and a random suffix, so
+ * concurrent writers (same or another process) never collide on the temp path.
+ */
+export function writeJsonAtomic(filePath: string, data: string): void {
+  const tmp = `${filePath}.${process.pid}.${Date.now().toString(36)}-${Math.random().toString(36).slice(2, 8)}.tmp`
+  try {
+    writeFileSync(tmp, data, 'utf8')
+    renameSync(tmp, filePath)
+  } catch (error) {
+    rmSync(tmp, { force: true })
+    throw error
+  }
+}
+
 /** Trim to the newest MAX_TASK_RECORDS entries and write atomically (tmp + rename). */
 function doSaveRegistry(config: Config, records: Record<string, TaskRecord>): void {
   const entries = Object.entries(records)
@@ -589,17 +608,7 @@ function doSaveRegistry(config: Config, records: Record<string, TaskRecord>): vo
   const base = registryFilePath(config)
   const dir = registryDir(base)
   mkdirSync(dir, { recursive: true })
-  const tmp = join(
-    dir,
-    `.agy-conv-${process.pid}-${Date.now().toString(36)}-${Math.random().toString(36).slice(2, 8)}.tmp`,
-  )
-  try {
-    writeFileSync(tmp, JSON.stringify(trimmed, null, 2), 'utf8')
-    renameSync(tmp, base)
-  } catch (error) {
-    rmSync(tmp, { force: true })
-    throw error
-  }
+  writeJsonAtomic(base, JSON.stringify(trimmed, null, 2))
 }
 
 /**
@@ -806,7 +815,7 @@ function writeTranscript(config: Config, id: string, text: string): string | und
     index = index.filter((entry) => entry && entry.task !== id)
     index.push({ task: id, file: path, at: new Date().toISOString() })
     index = index.slice(-100)
-    writeFileSync(indexPath, JSON.stringify(index, null, 2), 'utf8')
+    writeJsonAtomic(indexPath, JSON.stringify(index, null, 2))
     return path
   } catch {
     return undefined

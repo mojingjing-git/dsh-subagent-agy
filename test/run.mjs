@@ -5,7 +5,7 @@
  * Exits non-zero if any case fails. Every case is isolated (own scratch cwd,
  * own transcript dir, own plugin instance) and never touches the real agy.
  */
-import { existsSync, readFileSync, readdirSync, writeFileSync } from 'node:fs'
+import { existsSync, mkdirSync, readFileSync, readdirSync, writeFileSync } from 'node:fs'
 import { join } from 'node:path'
 import { bootPlugin, cleanup, homeTranscriptDir, readIfExists, scratch } from './harness.mjs'
 
@@ -558,6 +558,50 @@ await testCase('schema/undeclared-field-is-rejected', { scenario: 'success' }, a
     /is not a declared property/.test(String(threw?.message ?? '')),
     String(threw?.message ?? '').slice(0, 200),
   )
+})
+
+// ── 17. The transcript index is written atomically ─────────────────────────
+// The index is how every transcript lookup resolves (transcriptPathOf reads
+// index.json); a torn index write (crash mid-writeFileSync) would take every
+// lookup down with it. The registry writes atomically already — the index must
+// too. `writeJsonAtomic` is the shared helper; concurrent full runs double as a
+// read-modify-write parity guard.
+await testCase('transcript/atomic-index', { scenario: 'success' }, async (ctl) => {
+  const { writeJsonAtomic } = await import('../lib/index.js')
+  const target = join(ctl.workdir, 'atomic-index.json')
+  writeJsonAtomic(target, JSON.stringify([{ v: 1 }]))
+  writeJsonAtomic(target, JSON.stringify([{ v: 1 }, { v: 2 }]))
+  check('the atomic json writer replaces the file in place', readIfExists(target) === JSON.stringify([{ v: 1 }, { v: 2 }], null, 0), String(readIfExists(target)))
+  const residue = readdirSync(ctl.workdir).filter((name) => name.endsWith('.tmp'))
+  check('a successful atomic write leaves no tmp residue', residue.length === 0, residue.join(', '))
+  // Failure injection: on Windows a rename onto a directory entry fails, which
+  // is the seam a crash would hit. The failed write must clean up after itself.
+  const blocker = join(ctl.workdir, 'blocked.json')
+  mkdirSync(blocker)
+  let threw
+  try {
+    writeJsonAtomic(blocker, 'x')
+  } catch (error) {
+    threw = error
+  }
+  check('a blocked rename throws instead of failing silently', threw !== undefined, 'writeJsonAtomic swallowed a rename failure')
+  const residueAfterFailure = readdirSync(ctl.workdir).filter((name) => name.endsWith('.tmp'))
+  check('a failed atomic write leaves no tmp residue', residueAfterFailure.length === 0, residueAfterFailure.join(', '))
+
+  // Parity guard: five runs settling around the same time all land in the index.
+  const runs = await Promise.all(
+    [1, 2, 3, 4, 5].map((i) => ctl.callTool('antigravity', { description: `concurrent ${i}`, prompt: `Reply with exactly: ${i}` }).catch((error) => error)),
+  )
+  const allLanded = runs.every((value) => value?.kind === 'text' || value?.text !== undefined || typeof value === 'object')
+  const rawIndex = readIfExists(join(ctl.transcriptDir(), 'index.json'))
+  let entries = []
+  try {
+    entries = JSON.parse(rawIndex ?? '[]')
+  } catch {
+    entries = []
+  }
+  check('the transcript index survives five concurrent runs', Array.isArray(entries) && entries.length >= 5, `entries=${entries.length}`)
+  check('all five runs are readable through the index', entries.every((e) => typeof e?.file === 'string' && readIfExists(e.file) !== undefined) && allLanded, String(rawIndex).slice(0, 200))
 })
 
 // ── Summary ─────────────────────────────────────────────────────────────────

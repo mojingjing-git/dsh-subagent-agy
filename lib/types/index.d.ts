@@ -131,6 +131,15 @@ export declare function registryFilePath(config: Config): string;
  * warning. A crash or hand-edit can never silently wipe the history.
  */
 export declare function loadTaskRegistry(config: Config, logger?: RegistryLogger): Record<string, TaskRecord>;
+/**
+ * Replace `filePath` with `data` in one atomic step: write a unique sibling
+ * temp file, then rename it over the target. A crash mid-write leaves the old
+ * file intact (the temp is discarded), so readers never observe a torn file —
+ * the transcript index resolves every lookup, so a torn index would take all
+ * of them down at once. The temp name embeds the pid and a random suffix, so
+ * concurrent writers (same or another process) never collide on the temp path.
+ */
+export declare function writeJsonAtomic(filePath: string, data: string): void;
 export declare function saveTaskRegistry(config: Config, records: Record<string, TaskRecord>, logger?: RegistryLogger): Promise<void>;
 /**
  * Atomically read-modify-write the durable registry through the same
