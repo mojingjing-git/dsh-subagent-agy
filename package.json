@@ -1,10 +1,19 @@
 {
   "name": "@dsh-external/dsh-subagent-antigravity",
-  "version": "0.2.0-patched.7",
+  "version": "0.2.0-patched.11",
   "description": "Delegate tasks to Google Antigravity CLI (agy) as a DSH subagent — no Gemini API key needed, uses your Antigravity login",
   "type": "module",
   "main": "./lib/index.js",
   "types": "./lib/types/index.d.ts",
+  "exports": {
+    ".": {
+      "types": "./lib/types/index.d.ts",
+      "default": "./lib/index.js"
+    },
+    "./client": {
+      "default": "./lib/client.js"
+    }
+  },
   "files": [
     "lib",
     "cordis.patch.yml",
@@ -25,6 +34,10 @@
   "dsh": {
     "bundle": {
       "patch": "./cordis.patch.yml"
+    },
+    "client": {
+      "inject": [],
+      "platform": "web"
     }
   },
   "keywords": [
@@ -37,11 +50,13 @@
   ],
   "peerDependencies": {
     "@deepseek-ai/cordis": "^4.0.1",
+    "@deepseek-ai/dsh": ">=0.1.5-rc.1",
     "@deepseek-ai/dsh-subagent": ">=0.1.0-rc.6 <0.3.0",
     "@deepseek-ai/dsh-subprocess": ">=0.1.0-rc.6 <0.3.0",
     "@deepseek-ai/dsh-jobs": ">=0.1.0-rc.6 <0.3.0",
     "@deepseek-ai/dsh-tools": ">=0.1.0-rc.6 <0.3.0",
-    "@deepseek-ai/schemastery": "^3.18.0"
+    "@deepseek-ai/schemastery": "^3.18.0",
+    "react": ">=18.0.0"
   },
   "devDependencies": {
     "@deepseek-ai/cordis": "^4.0.1",
@@ -74,6 +89,7 @@
     "build:local": "node scripts/build.mjs",
     "typecheck": "tsc -p tsconfig.typecheck.json",
     "test": "node test/run.mjs",
+    "test:panel": "node test/panel-sources.mjs && node test/panel-routes.mjs && node test/panel-stream.mjs && node test/panel-client.mjs && node test/agy-models.mjs",
     "test:e2e": "node test/e2e-real.mjs",
     "pack": "node scripts/pack.mjs",
     "selftest": "node scripts/selftest.mjs",
