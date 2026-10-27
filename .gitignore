@@ -2,6 +2,9 @@ node_modules/
 *.tsbuildinfo
 *.tgz
 
+# One-off probes into agy's own storage: kept locally, not part of the plugin.
+scratch/
+
 # The compiled bundle is tracked on purpose: `dsh plugin add` consumes a
 # published package, and a user who installs straight from GitHub without a
 # build step must get a working `lib/index.js`. It is reproducible from `src/`
