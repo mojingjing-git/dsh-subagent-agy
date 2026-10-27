@@ -70,6 +70,12 @@ interface PanelRun {
   label: string
   status: 'running' | 'done' | 'failed' | 'cancelled'
   text: string
+  /**
+   * Set by `drain()` when `text` was truncated to the cap. The client's cursor
+   * then points at dropped text — without this flag every later poll would
+   * compute an empty slice and the run would look frozen forever.
+   */
+  resetPending: boolean
   tool: string | null
   startedAt: number
   endedAt: number | null
@@ -115,6 +121,7 @@ class RunStore {
       label,
       status: 'running',
       text: '',
+      resetPending: false,
       tool: null,
       startedAt: Date.now(),
       endedAt: null,
@@ -158,7 +165,11 @@ class RunStore {
   read(id: string, since: number): { found: true; run: PanelRun; cursor: number; reset: boolean } | { found: false } {
     const run = this.runs.get(id)
     if (run === undefined) return { found: false }
-    const reset = !Number.isFinite(since) || since < 0 || since > run.text.length
+    const reset = !Number.isFinite(since) || since < 0 || since > run.text.length || run.resetPending
+    if (reset) run.resetPending = false
+    // On reset the slice origin is 0: the client asked for (or needs) the whole
+    // buffer. The payload still reports run.text.length as the resume point, so
+    // the client re-bases on the full text and continues incrementally.
     const cursor = reset ? 0 : since
     return { found: true, run, cursor, reset }
   }
@@ -178,7 +189,10 @@ class RunStore {
       const delta = run.handle.readOutput()
       if (delta.length > 0) {
         run.text += delta
-        if (run.text.length > MAX_RUN_TEXT) run.text = run.text.slice(run.text.length - MAX_RUN_TEXT)
+        if (run.text.length > MAX_RUN_TEXT) {
+          run.text = run.text.slice(run.text.length - MAX_RUN_TEXT)
+          run.resetPending = true
+        }
       }
       run.tool = run.handle.tool?.() ?? run.tool
       const steps = run.handle.steps?.()

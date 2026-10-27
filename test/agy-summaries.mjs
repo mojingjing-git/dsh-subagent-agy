@@ -35,15 +35,15 @@ db.exec(`create table conversation_summaries (
 const insert = db.prepare(
   'insert into conversation_summaries values (?, ?, ?, ?, ?, ?, ?)',
 )
-insert.run('conv-a', '标题 A', '预览 A', 12, '2026-10-27 10:17:27+00:00', '2026-10-27 09:00:00+00:00', 'CASCADE_RUN_STATUS_IDLE')
+insert.run('aaaaaaaa-0000-4000-8000-00000000000a', '标题 A', '预览 A', 12, '2026-10-27 10:17:27+00:00', '2026-10-27 09:00:00+00:00', 'CASCADE_RUN_STATUS_IDLE')
 // The zero time means "never" — it must not become a date.
-insert.run('conv-b', null, null, 0, '0001-01-01 00:00:00+00:00', '0001-01-01 00:00:00+00:00', null)
+insert.run('bbbbbbbb-0000-4000-8000-00000000000b', null, null, 0, '0001-01-01 00:00:00+00:00', '0001-01-01 00:00:00+00:00', null)
 db.close()
 
 await check('summary rows are read back with their metadata', async () => {
   const summaries = await readConversationSummaries(dbPath)
   assert.equal(summaries.size, 2)
-  const a = summaries.get('conv-a')
+  const a = summaries.get('aaaaaaaa-0000-4000-8000-00000000000a')
   assert.equal(a.title, '标题 A')
   assert.equal(a.preview, '预览 A')
   assert.equal(a.stepCount, 12)
@@ -54,7 +54,7 @@ await check('summary rows are read back with their metadata', async () => {
 
 await check('the zero time is not a date', async () => {
   const summaries = await readConversationSummaries(dbPath)
-  const b = summaries.get('conv-b')
+  const b = summaries.get('bbbbbbbb-0000-4000-8000-00000000000b')
   assert.equal(b.lastModifiedAt, null)
   assert.equal(b.lastUserInputAt, null)
   assert.equal(b.title, null)
@@ -69,11 +69,11 @@ await check('a missing database yields an empty map', async () => {
 await check('the conversation list carries the summary metadata', async () => {
   const conversationsDir = join(scratch, 'conversations')
   mkdirSync(conversationsDir, { recursive: true })
-  writeFileSync(join(conversationsDir, 'conv-a.db'), '')
+  writeFileSync(join(conversationsDir, 'aaaaaaaa-0000-4000-8000-00000000000a.db'), '')
   const summaries = await readConversationSummaries(dbPath)
   const items = listConversations({
     records: {
-      'k1': { conversationId: 'conv-a', cwd: scratch, label: '', createdAt: 1000 },
+      'k1': { conversationId: 'aaaaaaaa-0000-4000-8000-00000000000a', cwd: scratch, label: '', createdAt: 1000 },
     },
     conversationsDir,
     annotationsDir: join(scratch, 'annotations'),
@@ -92,7 +92,7 @@ await check('without a summary the list keeps the registry timestamp', async () 
   const conversationsDir = join(scratch, 'conversations')
   const items = listConversations({
     records: {
-      'k1': { conversationId: 'conv-a', cwd: scratch, label: '本地标签', createdAt: 1000 },
+      'k1': { conversationId: 'aaaaaaaa-0000-4000-8000-00000000000a', cwd: scratch, label: '本地标签', createdAt: 1000 },
     },
     conversationsDir,
     annotationsDir: join(scratch, 'annotations'),

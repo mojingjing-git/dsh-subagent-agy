@@ -52,10 +52,10 @@ let cancelled = false
 let pendingText = ''
 let toolName = null
 let resolveDone
-const done = new Promise((resolve) => { resolveDone = resolve })
+let donePromise = new Promise((resolve) => { resolveDone = resolve })
 const handle = {
   cancel: () => { cancelled = true },
-  done,
+  get done() { return donePromise },
   readOutput: () => { const t = pendingText; pendingText = ''; return t },
   tool: () => toolName,
 }
@@ -258,6 +258,50 @@ try {
     await new Promise((resolve) => setTimeout(resolve, 100))
     const runningList = await call('/api-agy/running', {})
     assert.equal(runningList.json.count, 0)
+    // Re-arm: later checks start fresh runs and they must not settle instantly.
+    donePromise = new Promise((resolve) => { resolveDone = resolve })
+  })
+
+  await check('a run past the buffer cap resyncs the client instead of freezing', async () => {
+    const started = await call('/api-agy/continue', { conversationId, prompt: 'big' })
+    assert.equal(started.status, 200)
+    const runId = started.json.runId
+    pendingText = 'x'.repeat(500_000)
+    await new Promise((resolve) => setTimeout(resolve, 350))
+    const first = await call('/api-agy/run', { runId, since: 0 })
+    assert.equal(first.json.status, 'running')
+    assert.equal(first.json.reset, true)
+    assert.equal(first.json.text.length, 409_600)
+    assert.equal(first.json.cursor, 409_600)
+    pendingText = 'y'.repeat(100_000)
+    await new Promise((resolve) => setTimeout(resolve, 350))
+    const second = await call('/api-agy/run', { runId, since: first.json.cursor })
+    // The buffer was truncated again: the client gets a full replacement, not
+    // the empty delta the old behavior produced (which froze the run forever).
+    assert.equal(second.json.reset, true)
+    assert.equal(second.json.text.length, 409_600)
+    assert.equal(second.json.cursor, 409_600)
+    await call('/api-agy/cancel', { runId })
+  })
+
+  await check('a buffer that exactly fits the cap does not flip into reset', async () => {
+    const started = await call('/api-agy/continue', { conversationId, prompt: 'exact' })
+    assert.equal(started.status, 200)
+    const runId = started.json.runId
+    pendingText = 'x'.repeat(409_600)
+    await new Promise((resolve) => setTimeout(resolve, 350))
+    const first = await call('/api-agy/run', { runId, since: 0 })
+    assert.equal(first.json.reset, false)
+    assert.equal(first.json.text.length, 409_600)
+    pendingText = 'z'
+    await new Promise((resolve) => setTimeout(resolve, 350))
+    const second = await call('/api-agy/run', { runId, since: first.json.cursor })
+    // One more char tips the total over the cap — the client gets a full
+    // resync (409600 chars), never an empty delta at the boundary.
+    assert.equal(second.json.reset, true)
+    assert.equal(second.json.text.length, 409_600)
+    assert.equal(second.json.cursor, 409_600)
+    await call('/api-agy/cancel', { runId })
   })
 
   await check('prefs hide removes a row', async () => {
