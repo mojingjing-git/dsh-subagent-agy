@@ -6,7 +6,7 @@
  * own transcript dir, own plugin instance) and never touches the real agy.
  */
 import { existsSync, mkdirSync, readFileSync, readdirSync, writeFileSync } from 'node:fs'
-import { join } from 'node:path'
+import { isAbsolute, join, resolve } from 'node:path'
 import { bootPlugin, cleanup, homeTranscriptDir, readIfExists, scratch } from './harness.mjs'
 
 const filter = process.argv[2]
@@ -307,6 +307,21 @@ await testCase('cwd/child-runs-in-configured-dir', { scenario: 'writes-file' }, 
     const recorded = readFileSync(probe, 'utf8').trim()
     check('child reports the same cwd', recorded.toLowerCase() === workdir.toLowerCase(), `${recorded} vs ${workdir}`)
   }
+})
+
+// The resolver is the plugin's only cwd policy; a session header without a cwd
+// arrives as '' at the call site, and every shape it can produce must be an
+// absolute path — a relative one would silently anchor on whatever directory
+// the plugin process happens to run in.
+await testCase('cwd/resolve-child-cwd-is-always-absolute', { scenario: 'echo-argv' }, async (ctl) => {
+  const { resolveChildCwd } = ctl.mod
+  check('a relative base anchors on the parent', resolveChildCwd(ctl.workdir, 'sub') === join(ctl.workdir, 'sub'))
+  check('a missing parent falls back to the process cwd', resolveChildCwd(undefined, 'sub') === resolve(process.cwd(), 'sub'))
+  const emptyParent = resolveChildCwd('', '')
+  check("an empty parent (header.cwd ?? '') never yields an empty cwd", isAbsolute(emptyParent), JSON.stringify(emptyParent))
+  const relativeParent = resolveChildCwd('relative/parent', '')
+  check('a relative parent is anchored, not passed through', isAbsolute(relativeParent), JSON.stringify(relativeParent))
+  check('an absolute base wins untouched', resolveChildCwd(ctl.workdir, ctl.workdir) === ctl.workdir)
 })
 
 // ── 8. Flag construction ────────────────────────────────────────────────────

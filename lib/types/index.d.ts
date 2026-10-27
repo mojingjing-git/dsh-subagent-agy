@@ -58,6 +58,7 @@ import type { Context } from '@deepseek-ai/cordis';
 import type { Agent } from '@deepseek-ai/dsh-agent';
 import type { ContentBlock } from '@deepseek-ai/dsh-llm';
 import { type StepEvent } from './agy-steps.js';
+export declare function resolveChildCwd(parentCwd: string | undefined, configuredCwd: string): string;
 export declare const name = "@dsh-external/dsh-subagent-antigravity";
 export declare const inject: string[];
 /** Register the `antigravity` job kind with the generic jobs registry (id prefix: `antigravity-N`). */

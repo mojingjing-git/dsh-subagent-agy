@@ -72,7 +72,7 @@ import { scrubbedParentEnv, type SubprocessHandle } from '@deepseek-ai/dsh-subpr
 import type { SessionId } from '@deepseek-ai/dsh-session'
 import type { Agent } from '@deepseek-ai/dsh-agent'
 import type { ContentBlock } from '@deepseek-ai/dsh-llm'
-import { dirname, isAbsolute, join } from 'node:path'
+import { dirname, isAbsolute, join, resolve } from 'node:path'
 import { mergeStepInto, parseStepUpdate, snapshotSteps, type StepEvent } from './agy-steps.js'
 import { homedir, tmpdir } from 'node:os'
 import { mkdirSync, readFileSync, renameSync, rmSync, statSync, writeFileSync } from 'node:fs'
@@ -94,10 +94,17 @@ import { registerAgyPanel } from './agy-panel.js'
 // self-contained path policies; these local copies reproduce the upstream
 // behaviour instead of dropping the checks. They are pure functions over the
 // same inputs, so they stay correct if a future DSH restores the originals.
-function resolveChildCwd(parentCwd: string | undefined, configuredCwd: string): string {
+export function resolveChildCwd(parentCwd: string | undefined, configuredCwd: string): string {
   const base = configuredCwd.trim()
-  if (base.length === 0) return parentCwd ?? process.cwd()
-  return isAbsolute(base) ? base : join(parentCwd ?? process.cwd(), base)
+  // A session header without a cwd arrives as '' (`?? ''` at the call site),
+  // and `'' ?? fallback` keeps the ''. Returning it would hand the child an
+  // unanchored relative cwd that resolves against whatever the plugin's own
+  // process cwd is. Same for a relative parent: anchor on the process cwd.
+  const parent = parentCwd !== undefined && parentCwd.trim().length > 0 && isAbsolute(parentCwd)
+    ? parentCwd
+    : process.cwd()
+  if (base.length === 0) return parent
+  return isAbsolute(base) ? base : resolve(parent, base)
 }
 
 function validateConfiguredCwd(cwd: string, field: string = 'cwd'): void {
