@@ -42,28 +42,20 @@ $ErrorActionPreference = 'Stop'
 Set-StrictMode -Version Latest
 
 # Never ship a stale bundle: `src/` is the source of truth and `lib/` is built
-# from it. If `src/index.ts` is newer than `lib/index.js`, a build was skipped
-# and the tarball would silently carry the previous version's behaviour.
+# from it. The rebuild is unconditional — an mtime gate (lib/index.js vs
+# src/index.ts) misses edits to any other file under src/, and would happily
+# pack the previous version's behaviour.
 function Build-Bundle {
-    $src = Join-Path $PSScriptRoot 'src\index.ts'
-    $out = Join-Path $PSScriptRoot 'lib\index.js'
-    if (-not (Test-Path -LiteralPath $src)) { return }
-    if ((Test-Path -LiteralPath $out) -and
-        (Get-Item -LiteralPath $out).LastWriteTimeUtc -ge (Get-Item -LiteralPath $src).LastWriteTimeUtc) {
-        return
-    }
+    if (-not (Test-Path -LiteralPath (Join-Path $PSScriptRoot 'src\index.ts'))) { return }
     Write-Host "`n== build ==" -ForegroundColor Cyan
-    Write-Host "  src/index.ts is newer than lib/index.js — compiling" -ForegroundColor Yellow
+    Write-Host "  rebuilding lib/ from src/ (unconditional — mtime gates miss" -ForegroundColor Yellow
+    Write-Host "  edits to files other than index.ts)" -ForegroundColor Yellow
     Push-Location $PSScriptRoot
     try {
         & npm run build 2>&1 | Out-String | Write-Host
         if ($LASTEXITCODE -ne 0) { Write-Host '  FAIL npm run build' -ForegroundColor Red; exit 1 }
     }
     finally { Pop-Location }
-    if ((Get-Item -LiteralPath $out).LastWriteTimeUtc -lt (Get-Item -LiteralPath $src).LastWriteTimeUtc) {
-        Write-Host '  FAIL lib/index.js is still older than src/index.ts after the build' -ForegroundColor Red
-        exit 1
-    }
     Write-Host '  ok   lib/index.js rebuilt' -ForegroundColor Green
 }
 Build-Bundle
