@@ -23,6 +23,9 @@
     "LICENSE"
   ],
   "license": "MIT",
+  "engines": {
+    "node": ">=22.5.0"
+  },
   "repository": {
     "type": "git",
     "url": "git+https://github.com/mojingjing-git/dsh-subagent-agy.git"
