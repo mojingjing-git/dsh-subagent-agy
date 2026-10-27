@@ -118,6 +118,14 @@ configured model** (hover for the reset time). Clicking it opens the
   not squeeze the list) and streams token by token; stop it at any time.
   Continuations of one conversation are serialised, so two instructions never
   land in the same agy conversation at once.
+- **Step timeline**: opening a conversation shows **what the model actually did**
+  above the list — who said what, which tool ran with which arguments, which step
+  failed. The timeline comes from agy's own
+  `~/.gemini/antigravity-cli/conversations/<id>.db` (`steps` ordered by `idx`,
+  reply bodies in `gen_metadata`), so **finished** conversations show their steps
+  too, not only the running ones. agy does not keep the reply body for every
+  conversation: tool calls and prompts are always there, reply bodies only for
+  some of them, and the timeline says so instead of showing an empty bubble.
 
 The panel reads the local registry, so past conversations remain resumable after
 a DSH restart; when agy is missing or logged out the quota area shows an empty
