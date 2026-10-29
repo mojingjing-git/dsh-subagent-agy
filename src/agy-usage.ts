@@ -107,7 +107,7 @@ interface CachedSnapshot {
   fetchedAt: number
 }
 
-const DEFAULT_TTL_MS = 5 * 60 * 1000
+const DEFAULT_TTL_MS = 60 * 1000
 
 /**
  * TTL + single-flight cache around one usage probe.
@@ -131,9 +131,19 @@ export class UsageReader {
     this.ttlMs = options.ttlMs ?? DEFAULT_TTL_MS
   }
 
-  /** Last known snapshot (memory, then disk). Never spawns. */
+  /**
+   * Last known snapshot (memory, then disk). Never spawns.
+   *
+   * The freshness is decided here, every time: a snapshot that was taken two
+   * minutes ago is stale even though it is still the newest one in memory.
+   * Without that, the panel would keep showing the same numbers until someone
+   * pressed the refresh button.
+   */
   peek(): UsageReport | null {
-    if (this.last !== null) return this.last
+    if (this.last !== null) {
+      if (Date.now() - this.last.fetchedAt <= this.ttlMs) return this.last
+      return { ...this.last, stale: true }
+    }
     const cached = this.readCache()
     if (cached === null) return null
     this.last = this.buildReport(cached.rows, cached.fetchedAt, Date.now() - cached.fetchedAt > this.ttlMs)
@@ -179,7 +189,9 @@ export class UsageReader {
         this.last = stale
         return stale
       }
-      return {
+      // Nothing to fall back on: keep the failure in memory as well, so the
+      // panel can say what went wrong instead of showing an empty card.
+      const failed: UsageReport = {
         rows: [],
         badge: null,
         badgeFamily: this.badgeFamily,
@@ -187,6 +199,8 @@ export class UsageReader {
         stale: true,
         error: error instanceof Error ? error.message : String(error),
       }
+      this.last = failed
+      return failed
     }
   }
 

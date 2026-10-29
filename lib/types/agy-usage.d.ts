@@ -52,7 +52,14 @@ export declare class UsageReader {
     private readonly runner;
     private readonly badgeFamily;
     constructor(options: UsageReaderOptions);
-    /** Last known snapshot (memory, then disk). Never spawns. */
+    /**
+     * Last known snapshot (memory, then disk). Never spawns.
+     *
+     * The freshness is decided here, every time: a snapshot that was taken two
+     * minutes ago is stale even though it is still the newest one in memory.
+     * Without that, the panel would keep showing the same numbers until someone
+     * pressed the refresh button.
+     */
     peek(): UsageReport | null;
     /** Fresh snapshot when the TTL allows, otherwise a refresh (single-flight). */
     read(force?: boolean): Promise<UsageReport>;
