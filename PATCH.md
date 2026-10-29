@@ -6,13 +6,50 @@ This fork (`mojingjing-git/dsh-subagent-agy`) carries the patches below.
 
 The patches now live in **TypeScript source** (`src/index.ts`), not hand-edited
 into the compiled bundle: the fork ships the source, a `tsc` build
-(`npm run build`), an offline suite (`test/run.mjs`, 93 assertions against a
-simulated agy), seven panel suites (`npm run test:panel`, 54 assertions) and an
+(`npm run build`), an offline suite (`test/run.mjs`, 113 assertions against a
+simulated agy), ten panel suites (`npm run test:panel`, 101 checks) and an
 end-to-end suite (`test/e2e-real.mjs`, 13 assertions against the installed `agy`).
 
 The package name (`@dsh-external/dsh-subagent-antigravity`) and the Cordis mount
 id (`dsh-subagent-antigravity`) never change, so this build drops in where the
-upstream release was. Version: `0.2.0-patched.12`.
+upstream release was. Version: `0.2.0-patched.14`.
+
+## v14 — tokens and timestamps, read from agy's own transcript
+
+Two numbers the panel had no honest source for: **when** a step happened and
+**what it cost**. The SQLite step table has no time column and no token
+counters, so both had to come from the other file agy writes:
+
+- `src/agy-transcript.ts` reads
+  `~/.gemini/antigravity-cli/brain/<conversation-id>/.system_generated/logs/transcript.jsonl`,
+  one plain JSON object per line: `step_index`, `type`, `created_at`, the
+  prompt or reply in `content`, the model's reasoning in `thinking`, the tool
+  calls in `tool_calls` (with `args` as a JSON string) and the counters
+  `input_tokens` / `output_tokens` / `cache_read_tokens`.
+- `src/agy-history.ts` merges it with the database timeline: the transcript
+  knows the time, the tokens and the tool arguments, the database knows the
+  steps the transcript never mentions. The reply body wins where both have it;
+  a step the transcript does not cover still shows up, without a time.
+- the client renders the time on the left of every step, the tokens on the
+  right, and the totals for the conversation on top of the timeline. Cached
+  reads are billed at a discount, so they are counted apart from the input
+  tokens rather than inside them.
+
+The mapping from agy's own `type` is 1:1 — `USER_INPUT` → `user_input`,
+`PLANNER_RESPONSE` / `GENERIC` / `AGENT_RESPONSE` → `agent_response`, `TOOL_CALL`
+→ `tool` — so the live timeline and the historical one read the same. A
+`GENERIC` line is the *result* of the tool call announced on the line above, so
+it borrows that call; the thinking of a reply stays next to the reply.
+
+Where agy wrote no transcript, the panel shows the steps without times or
+tokens. It does not invent zeros.
+
+The quota cards also say **when** they were read now: the probe takes about ten
+seconds, and a number that is ten minutes old should look ten minutes old.
+The freshness is decided on every read, not once at startup — before this the
+snapshot kept its original `stale: false`, the automatic refresh branch could
+never be reached again, and the percentages sat unchanged for as long as the
+panel stayed open. `test/agy-usage.mjs` pins that rule down.
 
 ## v12 — the panel shows what the model actually did
 

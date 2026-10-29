@@ -1,6 +1,6 @@
 {
   "name": "@dsh-external/dsh-subagent-antigravity",
-  "version": "0.2.0-patched.13",
+  "version": "0.2.0-patched.14",
   "description": "Delegate tasks to Google Antigravity CLI (agy) as a DSH subagent — no Gemini API key needed, uses your Antigravity login",
   "type": "module",
   "main": "./lib/index.js",
@@ -94,7 +94,7 @@
     "pretest": "node scripts/build.mjs",
     "test": "node test/run.mjs",
     "pretest:panel": "node scripts/build.mjs",
-    "test:panel": "node test/panel-sources.mjs && node test/panel-routes.mjs && node test/panel-stream.mjs && node test/panel-client.mjs && node test/agy-models.mjs && node test/agy-summaries.mjs && node test/agy-steps.mjs && node test/agy-history.mjs",
+    "test:panel": "node test/panel-sources.mjs && node test/panel-routes.mjs && node test/panel-stream.mjs && node test/panel-client.mjs && node test/agy-models.mjs && node test/agy-summaries.mjs && node test/agy-steps.mjs && node test/agy-transcript.mjs && node test/agy-usage.mjs && node test/agy-history.mjs",
     "test:e2e": "node test/e2e-real.mjs",
     "pack": "node scripts/pack.mjs",
     "selftest": "node scripts/selftest.mjs",

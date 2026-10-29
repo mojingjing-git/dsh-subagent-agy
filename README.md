@@ -109,7 +109,8 @@ configured model** (hover for the reset time). Clicking it opens the
   Models / Claude and GPT models × five-hour / weekly, each with its reset time.
   One probe takes ~10 seconds, so the result is cached for five minutes
   (single-flight — many open panes still spawn one agy); the card's refresh
-  button forces a new probe.
+  button forces a new probe, and the cards say **when** the numbers were read —
+  the probe is slow, and stale numbers should be obvious at a glance.
 - **Conversation list**: only conversations **this plugin** ran
   (`~/.dsh/agy-conversations.json`), with title, time, working directory, model
   and run state. The plugin's own test records are filtered out.
@@ -126,6 +127,17 @@ configured model** (hover for the reset time). Clicking it opens the
   too, not only the running ones. agy does not keep the reply body for every
   conversation: tool calls and prompts are always there, reply bodies only for
   some of them, and the timeline says so instead of showing an empty bubble.
+- **Time and tokens per step**: every step shows the **time it happened** on the
+  left and the **tokens it cost** (in / out) on the right; the top of the
+  timeline carries the **totals** for the conversation. Both come from agy's own
+  transcript
+  (`~/.gemini/antigravity-cli/brain/<id>/.system_generated/logs/transcript.jsonl`),
+  where every line carries `created_at` and
+  `input_tokens / output_tokens / cache_read_tokens`. The database's step table
+  has no time column, so time and tokens can only come from the transcript — a
+  conversation without one shows its steps without times or tokens rather than
+  fake zeros. Cached reads are billed at a discount, so they are **not counted as
+  input**; the totals list them separately.
 
 The panel reads the local registry, so past conversations remain resumable after
 a DSH restart; when agy is missing or logged out the quota area shows an empty
