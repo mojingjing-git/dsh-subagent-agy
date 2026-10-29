@@ -12,7 +12,7 @@ end-to-end suite (`test/e2e-real.mjs`, 13 assertions against the installed `agy`
 
 The package name (`@dsh-external/dsh-subagent-antigravity`) and the Cordis mount
 id (`dsh-subagent-antigravity`) never change, so this build drops in where the
-upstream release was. Version: `0.2.0-patched.18`.
+upstream release was. Version: `0.2.0-patched.19`.
 
 ## v18 — what a percentage point is worth
 
@@ -31,8 +31,26 @@ This version connects them.
   span: attributing tokens per model family would mean reading every
   conversation's model, and a per-family error would silently inflate the
   estimate. The card labels the number as approximate for that reason.
-- The token card gains a "额度换算（近似）" section: `已用 16% ≈ 18.3M tokens →
-  100% ≈ 114M`, or "攒数据中" until a row has two comparable snapshots.
+- The token card gains a "额度换算（近似）" section: `近 3 天 掉 16 点 ≈ 18.3M
+  tokens → 100% ≈ 114M`, or a reason why there is no number yet.
+
+**Fixed in patched.19 — the first cut extrapolated noise.** Two mistakes, both
+visible in one screenshot ("已用 1% ≈ 190.51M → 100% ≈ 19.05B", identical for the
+weekly and the five-hour row):
+
+1. the token figure came from **day buckets**, so a twenty-minute measurement
+   between two snapshots counted the whole day's spend — ~190M attributed to one
+   percentage point;
+2. nothing rejected a one-point move over twenty minutes, even though agy prints
+   integer percentages and one point there is rounding noise.
+
+Now `estimateQuota()` takes the steps' own millisecond timestamps
+(`scanTokenRows()`), and refuses to extrapolate a span shorter than **two hours**
+(`reason: 'short-span'`), which the card shows instead of a fabricated number.
+The regression is pinned by a test that feeds a 20-minute, 1-point, 190M-token
+sample and asserts the estimate stays null. The same numbers also appeared twice
+because both rows shared the same whole-account span — that part is by design;
+the span is now printed next to each number so it is obvious what was measured.
 
 ## v17 — what the account actually spends, both stores included
 

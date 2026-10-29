@@ -63,17 +63,35 @@ check('tokens per percentage point and the 100% projection', () => {
     { t: now - 1 * DAY, family: 'Gemini Models', window: 'Weekly Limit Remaining', percent: 80, resetAt: 'R1' },
     { t: now, family: 'Gemini Models', window: 'Weekly Limit Remaining', percent: 74, resetAt: 'R1' },
   ]
-  const days = [
-    { day: '2026-10-27', input: 1000, output: 100, cacheRead: 5000, total: 6100, steps: 3 },
-    { day: '2026-10-28', input: 1000, output: 100, cacheRead: 5000, total: 6100, steps: 3 },
-    { day: '2026-10-29', input: 1000, output: 100, cacheRead: 5000, total: 6100, steps: 3 },
+  const rows = [
+    { t: now - 45 * 3600_000, input: 1000, output: 100, cacheRead: 5000 },
+    { t: now - 20 * 3600_000, input: 1000, output: 100, cacheRead: 5000 },
+    { t: now - 2 * 3600_000, input: 1000, output: 100, cacheRead: 5000 },
+    // Outside the span: must not be counted.
+    { t: now - 3 * DAY, input: 999_999, output: 0, cacheRead: 0 },
   ]
-  const [estimate] = estimateQuota(snapshots, days, now)
+  const [estimate] = estimateQuota(snapshots, rows, now)
   assert.equal(estimate.usedPoints, 16)
   assert.equal(estimate.tokens, 6100 * 3)
   assert.equal(estimate.tokensPerPoint, (6100 * 3) / 16)
   assert.equal(estimate.capacity, Math.round(((6100 * 3) / 16) * 100))
   assert.equal(estimate.samples, 3)
+  assert.equal(estimate.reason, null)
+})
+
+check('a span too short to beat rounding is refused, not extrapolated', () => {
+  const now = at('2026-10-29T12:00:00Z')
+  const snapshots = [
+    { t: now - 20 * 60_000, family: 'Gemini Models', window: 'Weekly Limit Remaining', percent: 50, resetAt: 'R1' },
+    { t: now, family: 'Gemini Models', window: 'Weekly Limit Remaining', percent: 49, resetAt: 'R1' },
+  ]
+  // The regression: a whole day of tokens divided by one noisy point reported
+  // ~19B per month.
+  const rows = [{ t: now - 10 * 60_000, input: 150_000_000, output: 10_000_000, cacheRead: 30_000_000 }]
+  const [estimate] = estimateQuota(snapshots, rows, now)
+  assert.equal(estimate.tokensPerPoint, null)
+  assert.equal(estimate.capacity, null)
+  assert.equal(estimate.reason, 'short-span')
 })
 
 check('a reset starts a new window instead of a negative delta', () => {

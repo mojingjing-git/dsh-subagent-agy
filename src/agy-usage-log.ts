@@ -201,12 +201,39 @@ export interface TokenUsageOptions {
   cachePath: string
   now?: number
   windowDays?: number
+  /** Reuse an earlier scan (the quota estimate already needed the raw rows). */
+  preScanned?: TokenScan
 }
 
 /** Scan both stores and return the rolling window plus the local total. */
 export function readTokenUsage(options: TokenUsageOptions): TokenUsageReport {
+  const scan = options.preScanned ?? scanTokenRows(options)
   const now = options.now ?? Date.now()
-  const windowDays = options.windowDays ?? 7
+  const summary = summarize(scan.rows, now, options.windowDays ?? 7)
+  return {
+    scannedAt: now,
+    windowDays: summary.windowDays,
+    days: summary.days,
+    window: summary.window,
+    allTime: { ...summary.allTime, conversations: scan.conversations },
+    files: scan.conversations,
+    reused: scan.reused,
+  }
+}
+
+export interface TokenScan {
+  /** Every token-bearing step across both stores, with millisecond stamps. */
+  rows: TokenRow[]
+  conversations: number
+  reused: number
+}
+
+/**
+ * The raw scan behind `readTokenUsage`. Exposed because the quota estimate needs
+ * the steps' own timestamps: a day bucket is fine for "what did today cost", and
+ * badly wrong for "what did these twenty minutes cost".
+ */
+export function scanTokenRows(options: TokenUsageOptions): TokenScan {
   const cache = readCache(options.cachePath)
   const files: Record<string, FileCacheEntry> = {}
   const rows: TokenRow[] = []
@@ -250,15 +277,5 @@ export function readTokenUsage(options: TokenUsageOptions): TokenUsageReport {
   }
 
   if (reused !== Object.keys(files).length) writeCache(options.cachePath, { version: CACHE_VERSION, files })
-
-  const summary = summarize(rows, now, windowDays)
-  return {
-    scannedAt: now,
-    windowDays: summary.windowDays,
-    days: summary.days,
-    window: summary.window,
-    allTime: { ...summary.allTime, conversations },
-    files: conversations,
-    reused,
-  }
+  return { rows, conversations, reused }
 }

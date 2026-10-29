@@ -49,6 +49,20 @@ export interface TokenUsageOptions {
     cachePath: string;
     now?: number;
     windowDays?: number;
+    /** Reuse an earlier scan (the quota estimate already needed the raw rows). */
+    preScanned?: TokenScan;
 }
 /** Scan both stores and return the rolling window plus the local total. */
 export declare function readTokenUsage(options: TokenUsageOptions): TokenUsageReport;
+export interface TokenScan {
+    /** Every token-bearing step across both stores, with millisecond stamps. */
+    rows: TokenRow[];
+    conversations: number;
+    reused: number;
+}
+/**
+ * The raw scan behind `readTokenUsage`. Exposed because the quota estimate needs
+ * the steps' own timestamps: a day bucket is fine for "what did today cost", and
+ * badly wrong for "what did these twenty minutes cost".
+ */
+export declare function scanTokenRows(options: TokenUsageOptions): TokenScan;

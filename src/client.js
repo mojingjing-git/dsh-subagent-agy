@@ -234,6 +234,26 @@ window.__ModuleLoader__.load({
       return String(Math.round(value))
     }
     const dayLabel = (day) => (typeof day === 'string' && day.length === 10 ? day.slice(5) : '')
+    /** 7_200_000 → "2 小时"; the quota estimate is only as good as its span. */
+    const durationText = (ms) => {
+      if (typeof ms !== 'number' || !Number.isFinite(ms) || ms <= 0) return '—'
+      const minutes = Math.round(ms / 60000)
+      if (minutes < 60) return `${minutes} 分钟`
+      const hours = Math.round(minutes / 60)
+      if (hours < 48) return `${hours} 小时`
+      return `${Math.round(hours / 24)} 天`
+    }
+    /** Why the conversion has no number yet — never just "攒数据中". */
+    const quotaHint = (quota) => {
+      const rows = Array.isArray(quota) ? quota : []
+      if (rows.length === 0) return '攒数据中：额度快照每 5 分钟记一次，同一重置窗口内攒到两次才谈得上换算'
+      const short = rows.filter((row) => row && row.reason === 'short-span')
+      if (short.length > 0) {
+        const spans = short.map((row) => durationText(row.spanMs)).join(' / ')
+        return `样本太短（${spans}）：百分比是整数，几分钟掉 1 点只是取整噪声，攒够 2 小时才算`
+      }
+      return '攒数据中：同一重置窗口内至少两次快照才能算出「1 点值多少 token」'
+    }
 
     /**
      * What the account has spent. `total` counts cache reads: they are the bulk
@@ -318,9 +338,9 @@ window.__ModuleLoader__.load({
               .map((row) => h(
                 'div',
                 { key: `${row.family}|${row.window}`, style: { fontSize: 10, color: C.dimmer, lineHeight: 1.5 } },
-                `${familyLabel(row.family)} · ${windowLabel(row.window)}：已用 ${row.usedPoints}% ≈ ${compactTokens(row.tokens)} tokens → 100% ≈ ${compactTokens(row.capacity)}`,
+                `${familyLabel(row.family)} · ${windowLabel(row.window)}：近 ${durationText(row.spanMs)} 掉 ${row.usedPoints} 点 ≈ ${compactTokens(row.tokens)} tokens → 100% ≈ ${compactTokens(row.capacity)}`,
               ))
-            : h('div', { style: { fontSize: 10, color: C.dimmer } }, '攒数据中：每 5 分钟记一次额度快照，同一窗口内至少两次才能算出「1% 值多少 token」'),
+            : h('div', { style: { fontSize: 10, color: C.dimmer } }, quotaHint(tokens && tokens.quota)),
         ),
       )
     }

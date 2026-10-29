@@ -77,7 +77,7 @@ import { filesTouched, mergeStepInto, parseStepUpdate, snapshotSteps, type StepE
 import { homedir, tmpdir } from 'node:os'
 import { mkdirSync, readFileSync, renameSync, rmSync, statSync, writeFileSync } from 'node:fs'
 import { familyOfModel, spawnUsage, UsageReader } from './agy-usage.js'
-import { readTokenUsage } from './agy-usage-log.js'
+import { readTokenUsage, scanTokenRows } from './agy-usage-log.js'
 import { appendQuotaSnapshot, estimateQuota, readQuotaLog, type QuotaSnapshot } from './agy-quota-log.js'
 import {
   MODEL_CACHE_TTL_MS,
@@ -2532,13 +2532,17 @@ export function apply(ctx: Context, config: Config): void {
     // Both stores, because the Antigravity IDE spends the same quota and never
     // shows up in this panel's conversation list.
     tokenUsage: () => {
-      const report = readTokenUsage({
+      const options = {
         roots: [join(antigravityHome, 'brain'), join(homedir(), '.gemini', 'antigravity', 'brain')],
         cachePath: join(pluginBaseDir(), 'agy-token-cache.json'),
-      })
+      }
+      // One scan feeds both the card and the quota estimate: the estimate needs
+      // the steps' own timestamps, not the day buckets.
+      const scan = scanTokenRows(options)
+      const report = readTokenUsage({ ...options, preScanned: scan })
       return {
         ...report,
-        quota: estimateQuota(readQuotaLog(join(pluginBaseDir(), 'agy-quota-log.jsonl')), report.days, Date.now()),
+        quota: estimateQuota(readQuotaLog(join(pluginBaseDir(), 'agy-quota-log.jsonl')), scan.rows, Date.now()),
       }
     },
     startRun: (input) => provider.startPanelRun(input),

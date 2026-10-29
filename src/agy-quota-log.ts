@@ -6,20 +6,27 @@
  * they do: tokens burned between two snapshots ÷ percentage points lost is what
  * one point costs, and ×100 is the window's capacity.
  *
- * Snapshots are appended to a JSONL file beside the plugin. Only changes are
- * written (same percent + same reset time is not news), so a day of five-minute
- * polling adds a handful of lines per row rather than hundreds.
+ * Two rules keep the number honest:
  *
- * The estimate is deliberately labelled approximate: tokens cannot be attributed
- * per model family without reading every conversation's model, so the token
- * figure is the whole account's spend inside the snapshot span. When a family's
- * quota moves and another family's work dominates, the number is an upper bound
- * — which is the safe direction for "how much do I get per month".
+ * 1. Only snapshots inside one **reset window** are comparable. A reset sends
+ *    the percentage back up and a delta across it is meaningless.
+ * 2. The span must be long enough to be signal. Percentages are integers, so a
+ *    one-point move over twenty minutes is rounding noise — an early version
+ *    divided a whole day's tokens by that point and reported 19B per month.
+ *    Two hours is the floor; a week of history is the good case.
+ *
+ * Snapshots are appended to a JSONL file beside the plugin. Only changes are
+ * written (same percent + same reset time is not news), so five-minute polling
+ * adds a handful of lines per row a day rather than hundreds.
+ *
+ * The token figure is the whole account's spend inside the span: attributing it
+ * per model family would mean reading every conversation's model, and a wrong
+ * split would inflate the estimate silently.
  */
 import { appendFileSync, existsSync, mkdirSync, readFileSync } from 'node:fs'
 import { dirname } from 'node:path'
 import type { UsageReport } from './agy-usage.js'
-import type { TokenDay } from './agy-usage-log.js'
+import type { TokenRow } from './agy-usage-log.js'
 
 /** One quota reading. `percent` is what is *left*, as agy prints it. */
 export interface QuotaSnapshot {
@@ -35,18 +42,23 @@ export interface QuotaEstimate {
   window: string
   /** Percentage points consumed between the first and last snapshot. */
   usedPoints: number
-  /** Tokens spent in the same span (whole account, hence "approximate"). */
+  /** Tokens spent between those two snapshots, to the millisecond. */
   tokens: number
-  /** Tokens per percentage point, or null when the span is too thin. */
+  /** Tokens per percentage point, or null when the sample is unusable. */
   tokensPerPoint: number | null
   /** tokensPerPoint × 100 — the window's estimated capacity. */
   capacity: number | null
   from: number
   to: number
+  /** Wall-clock length of the measurement. */
+  spanMs: number
   samples: number
+  /** Why there is no number yet; null once the estimate is usable. */
+  reason: 'few-samples' | 'short-span' | 'no-spend' | null
 }
 
 const DEDUPE_MS = 30 * 60 * 1000
+const HOUR = 3_600_000
 
 /** Append a snapshot per quota row, but only when it says something new. */
 export function appendQuotaSnapshot(
@@ -101,16 +113,20 @@ export function readQuotaLog(path: string): QuotaSnapshot[] {
 }
 
 /**
- * Tokens per percentage point, per quota row. Only pairs inside one reset
- * window are usable: a reset makes the percentage jump back up and the delta
- * meaningless.
+ * Tokens per percentage point, per quota row.
+ *
+ * `rows` are the token steps themselves (millisecond stamps), not day buckets:
+ * bucketing by day is fine for "what did today cost" and badly wrong for "what
+ * did these twenty minutes cost", which is exactly the span a fresh log has.
  */
 export function estimateQuota(
   snapshots: readonly QuotaSnapshot[],
-  days: readonly TokenDay[],
+  rows: readonly TokenRow[],
   now: number,
-  maxAgeMs = 30 * 86_400_000,
+  options: { maxAgeMs?: number; minSpanMs?: number } = {},
 ): QuotaEstimate[] {
+  const maxAgeMs = options.maxAgeMs ?? 30 * 86_400_000
+  const minSpanMs = options.minSpanMs ?? 2 * HOUR
   const byKey = new Map<string, QuotaSnapshot[]>()
   for (const snapshot of snapshots) {
     if (now - snapshot.t > maxAgeMs) continue
@@ -125,28 +141,62 @@ export function estimateQuota(
     const last = list[list.length - 1]
     if (list.length < 2) {
       const [family, window] = splitKey(key)
-      estimates.push({ family, window, usedPoints: 0, tokens: 0, tokensPerPoint: null, capacity: null, from: last.t, to: last.t, samples: list.length })
+      estimates.push(blank(family, window, last, list.length, 'few-samples'))
       continue
     }
     // Walk back to the earliest snapshot in the same reset window.
     const sameReset = list.filter((snapshot) => snapshot.resetAt === last.resetAt)
     const first = sameReset[0]
+    const spanMs = last.t - first.t
     const usedPoints = first.percent - last.percent
-    const tokens = tokensBetween(days, first.t, last.t)
-    const tokensPerPoint = usedPoints > 0 && tokens > 0 ? tokens / usedPoints : null
-    estimates.push({
+    const base = {
       family: last.family,
       window: last.window,
       usedPoints: Math.max(0, usedPoints),
-      tokens,
-      tokensPerPoint,
-      capacity: tokensPerPoint === null ? null : Math.round(tokensPerPoint * 100),
+      tokens: tokensBetween(rows, first.t, last.t),
       from: first.t,
       to: last.t,
+      spanMs,
       samples: sameReset.length,
-    })
+    }
+    if (sameReset.length < 2) {
+      estimates.push({ ...base, tokensPerPoint: null, capacity: null, reason: 'few-samples' })
+      continue
+    }
+    if (spanMs < minSpanMs) {
+      estimates.push({ ...base, tokensPerPoint: null, capacity: null, reason: 'short-span' })
+      continue
+    }
+    if (base.usedPoints <= 0 || base.tokens <= 0) {
+      estimates.push({ ...base, tokensPerPoint: null, capacity: null, reason: 'no-spend' })
+      continue
+    }
+    const tokensPerPoint = base.tokens / base.usedPoints
+    estimates.push({ ...base, tokensPerPoint, capacity: Math.round(tokensPerPoint * 100), reason: null })
   }
   return estimates
+}
+
+function blank(
+  family: string,
+  window: string,
+  last: QuotaSnapshot,
+  samples: number,
+  reason: QuotaEstimate['reason'],
+): QuotaEstimate {
+  return {
+    family,
+    window,
+    usedPoints: 0,
+    tokens: 0,
+    tokensPerPoint: null,
+    capacity: null,
+    from: last.t,
+    to: last.t,
+    spanMs: 0,
+    samples,
+    reason,
+  }
 }
 
 function splitKey(key: string): [string, string] {
@@ -154,14 +204,11 @@ function splitKey(key: string): [string, string] {
   return [key.slice(0, index), key.slice(index + 1)]
 }
 
-/** Whole-account tokens whose local day falls inside the span (day granularity). */
-function tokensBetween(days: readonly TokenDay[], from: number, to: number): number {
+/** Whole-account tokens whose own timestamp lands inside the span. */
+function tokensBetween(rows: readonly TokenRow[], from: number, to: number): number {
   let total = 0
-  for (const day of days) {
-    const start = Date.parse(`${day.day}T00:00:00`)
-    if (Number.isNaN(start)) continue
-    const end = start + 86_400_000
-    if (end > from && start <= to) total += day.total
+  for (const row of rows) {
+    if (row.t >= from && row.t <= to) total += row.input + row.output + row.cacheRead
   }
   return total
 }
