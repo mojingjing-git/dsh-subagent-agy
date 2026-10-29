@@ -183,6 +183,16 @@ await testCase('stream-json/tool-then-answer', { scenario: 'tool-then-answer' },
   check('answer reaches the caller', rendered.includes('Hello from agy.'), rendered.slice(0, 300))
 })
 
+// ── 2b. Delivery summary: what changed, how long, how many tokens ───────────
+await testCase('summary/foreground-reports-steps-and-files', { scenario: 'tool-then-answer' }, async (ctl) => {
+  const value = await ctl.callTool('antigravity', { description: 'summary', prompt: 'write a file then answer' })
+  const rendered = JSON.stringify(value.output)
+  check('a run summary is appended', rendered.includes('[agy]'), rendered.slice(0, 400))
+  check('the summary counts steps', /\d+ steps?/.test(rendered), rendered.slice(0, 400))
+  check('the summary names the file the agent wrote', rendered.includes('probe.txt'), rendered.slice(0, 400))
+  check('the summary carries token usage', /in \/ .*out/.test(rendered), rendered.slice(0, 500))
+})
+
 // ── 3. Chunking robustness ──────────────────────────────────────────────────
 await testCase('stream-json/split-multibyte-chunk', { scenario: 'split-chunk' }, async (ctl, { transcriptDir }) => {
   const value = await ctl.callTool('antigravity', { description: 'split chunk', prompt: 'say 中文' })
@@ -247,6 +257,49 @@ await testCase('auth-error/reports-auth', { scenario: 'auth-error' }, async (ctl
   check('the auth hint advertises no API key', !/ANTIGRAVITY_API_KEY/i.test(message), message)
   check('the auth hint names no nonexistent subcommand', !/agy\s*→\s*login|agy login/i.test(message), message)
   check('the auth hint points at the interactive sign-in', /sign-in|interactively/i.test(message), message)
+})
+
+// ── 5b. Honest settlement: an empty answer is not a success ─────────────────
+await testCase('denied/foreground-is-not-success', { scenario: 'denied' }, async (ctl) => {
+  let threw
+  try {
+    await ctl.callTool('antigravity', { description: 'denied', prompt: 'run a command' })
+  } catch (error) {
+    threw = error
+  }
+  const message = String(threw?.message ?? '')
+  // agy reports SUCCESS with an empty response when headless cannot prompt for
+  // permission; shipping that as a completed run is the empty-bubble bug.
+  check('a permission denial is not reported as success', threw !== undefined, message || 'resolved without an answer')
+  check('the denied action is named', /run_command|denied/i.test(message), message)
+  check('the failure says how to allow it', /skipPermissions|dangerously-skip-permissions|allow/i.test(message), message)
+})
+
+await testCase('empty-success/foreground-is-not-success', { scenario: 'empty-success' }, async (ctl) => {
+  let threw
+  try {
+    await ctl.callTool('antigravity', { description: 'empty', prompt: 'say nothing' })
+  } catch (error) {
+    threw = error
+  }
+  const message = String(threw?.message ?? '')
+  check('SUCCESS with no text is not reported as success', threw !== undefined, message || 'resolved without an answer')
+  check('the failure explains the empty answer', /no answer|produced no|empty/i.test(message), message)
+})
+
+await testCase('denied/background-settles-failed', { scenario: 'denied' }, async (ctl) => {
+  const value = await ctl.callTool('antigravity', { description: 'denied bg', prompt: 'run a command', background: true })
+  const settled = await ctl.jobsService.wait(value.jobId, 15_000)
+  check('a denied background run fails the job', settled?.status === 'failed', JSON.stringify(settled))
+  check('the job detail explains the denial', /denied|permission/i.test(String(settled?.detail ?? '')), settled?.detail)
+})
+
+await testCase('denied/with-text-still-completes', { scenario: 'denied-with-text' }, async (ctl) => {
+  const value = await ctl.callTool('antigravity', { description: 'denied but answered', prompt: 'try then explain' })
+  const rendered = JSON.stringify(value.output)
+  check('a run that still answered is completed', value.kind === 'foreground', JSON.stringify(value).slice(0, 200))
+  check('the answer is preserved', rendered.includes('I could not run that command.'), rendered.slice(0, 300))
+  check('the denied action is disclosed', /denied/i.test(rendered), rendered.slice(0, 600))
 })
 
 // ── 6. Timeout + cancellation (the TDZ regression) ──────────────────────────
@@ -468,6 +521,34 @@ await testCase('followup/unknown-task-rejected', { scenario: 'success' }, async 
   check('the error names the missing task', /no-such-task|unknown|not found/i.test(String(threw?.message ?? '')), String(threw?.message))
 })
 
+// ── 10b. Per-call overrides + one entry point ───────────────────────────────
+await testCase('flags/tool-overrides-model-and-effort', { scenario: 'echo-argv' }, async (ctl) => {
+  await ctl.callTool('antigravity', { description: 'override', prompt: 'hi', model: 'claude-sonnet-4-6', effort: 'max' })
+  const runSpawn = ctl.subprocess.spawned.find((h) => h.argv.includes('--model') && h.argv.some((a) => a === '--print' || a === '-p'))
+  const argv = runSpawn?.argv ?? []
+  check('a per-call model reaches the CLI', argv.includes('--model') && argv.includes('claude-sonnet-4-6'), argv.join(' '))
+  check('a per-call effort reaches the CLI', argv.includes('--effort') && argv.includes('max'), argv.join(' '))
+})
+
+await testCase('tool/resume-by-task', { scenario: 'success' }, async (ctl) => {
+  const first = await ctl.callTool('antigravity', { description: 'start', prompt: 'Reply with exactly: PONG' })
+  const second = await ctl.callTool('antigravity', { prompt: 'and again', task: first.task })
+  check('the new-task tool also resumes a task', second.kind === 'foreground' && second.task === first.task, JSON.stringify(second).slice(0, 300))
+  const resumeSpawn = ctl.subprocess.spawned.find((h) => h.argv.includes('--conversation'))
+  check('a resume passes --conversation', resumeSpawn !== undefined, ctl.subprocess.spawned.map((h) => h.argv.join(' ')).join(' | '))
+  check('a resume reuses the original conversation', resumeSpawn?.argv.includes(first.conversationId ?? '') === true, (resumeSpawn?.argv ?? []).join(' '))
+})
+
+await testCase('tool/description-required-for-new-task', { scenario: 'success' }, async (ctl) => {
+  let threw
+  try {
+    await ctl.callTool('antigravity', { prompt: 'hi' })
+  } catch (error) {
+    threw = error
+  }
+  check('a new task without a description is rejected', /description/i.test(String(threw?.message ?? '')), String(threw?.message ?? 'resolved'))
+})
+
 // ── 11. Background path ─────────────────────────────────────────────────────
 await testCase('background/job-reads-output', { scenario: 'tool-then-answer' }, async (ctl) => {
   const value = await ctl.callTool('antigravity', { description: 'bg task', prompt: 'work in background', background: true })
@@ -481,6 +562,14 @@ await testCase('background/job-reads-output', { scenario: 'tool-then-answer' }, 
   const out = ctl.jobsService.readOutput(value.jobId)
   check('background output contains the answer', out.includes('Hello from agy.'), `len=${out.length} ${out.slice(0, 300)}`)
   check('background output carries the task line', /\[task: /.test(out), out.slice(-200))
+})
+
+await testCase('background/resume-by-task', { scenario: 'success' }, async (ctl) => {
+  const first = await ctl.callTool('antigravity', { description: 'bg start', prompt: 'Reply with exactly: PONG' })
+  const value = await ctl.callTool('antigravity', { prompt: 'and again', task: first.task, background: true })
+  check('a resume can run in the background', value.kind === 'background' && typeof value.jobId === 'string', JSON.stringify(value))
+  const settled = await ctl.jobsService.wait(value.jobId, 15_000)
+  check('a resumed background job completes', settled?.status === 'completed', JSON.stringify(settled))
 })
 
 await testCase('background/cancel', { scenario: 'slow-stream' }, async (ctl) => {

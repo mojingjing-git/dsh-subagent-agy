@@ -119,3 +119,10 @@ export declare function mergeStepInto(steps: readonly StepEvent[], incoming: Ste
  * (and allocates a fresh timeline) on every 250 ms panel poll.
  */
 export declare function snapshotSteps(steps: readonly StepEvent[]): StepEvent[];
+/**
+ * The files a run changed, in the order agy touched them, de-duplicated.
+ *
+ * Derived from the tool steps instead of `git diff`: the child may run in a
+ * non-git directory, and a repo can carry edits that predate the run.
+ */
+export declare function filesTouched(steps: readonly StepEvent[]): string[];

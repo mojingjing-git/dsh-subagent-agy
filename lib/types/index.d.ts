@@ -158,6 +158,13 @@ export interface FollowupRequest {
     parent: Agent;
     signal: AbortSignal;
 }
+/** Per-call overrides of the configured model / reasoning level. */
+export interface SpawnOverrides {
+    /** agy model slug, or `auto` to keep the configured resolution. */
+    model?: string;
+    /** One of `low | medium | high | xhigh | max`; empty omits `--effort`. */
+    effort?: string;
+}
 /** Hooks shape registered with `ctx.jobs` for a background agy run (mirrors dsh-tool-pwsh's background adaptation). */
 export interface AntigravityBackgroundHandle {
     /** Stop the run (job_kill). */

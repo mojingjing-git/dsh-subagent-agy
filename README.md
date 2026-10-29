@@ -60,15 +60,21 @@ prompt it explicitly:
 
 | Surface | Name | What it does |
 |---|---|---|
-| new task | `antigravity` | delegate a self-contained task to agy (fresh conversation); returns a `task` key |
-| follow-up | `antigravity_followup` | continue a previous agy conversation via its `task` key — full context carries over |
+| task / follow-up | `antigravity` | pass `prompt` for a fresh conversation, or `task` to continue one (full context carries over); both work with `background: true` |
+| follow-up (legacy) | `antigravity_followup` | alias of `antigravity({ task, prompt })`, kept for compatibility |
 | list | `antigravity_tasks` | list running tasks + recent finished tasks; `task` keys survive DSH restarts |
 | cancel | `antigravity_cancel` | stop a running task by its `task` key (agy process tree terminated) |
 | login | `antigravity_login` | pop the interactive agy login window (also opens automatically on auth failures) |
 
+Any call may also override `model` (e.g. `claude-sonnet-4-6`) and `effort`
+(`low` / `medium` / `high` / `xhigh` / `max`) for that run only, without
+touching the global configuration.
+
 Example prompts:
 
 > "Use agy to rewrite the README of `D:\projects\my-project` and list the changes."
+>
+> "Let antigravity rework this project's landing page — use claude-sonnet-4-6 at max effort."
 >
 > "用 antigravity 优化这个项目的页面" *(in a Chinese session)*
 
@@ -205,12 +211,28 @@ dsh-subagent-antigravity:
 Each task spawns a fresh `agy -p <task>` process in the session workspace
 and returns the final answer. Runs use `--output-format json`, whose reply
 carries agy's `conversation_id`; the plugin records it in a durable registry
-(`~/.dsh/agy-conversations.json`), and `antigravity_followup` resumes the
+(`~/.dsh/agy-conversations.json`), and `antigravity({ task })` resumes the
 same conversation via `--conversation <id>`. Background runs use
 `stream-json` for live progress and register with DSH's jobs system
 (`job_output` / `job_kill`). The job's owner is the calling agent, so a
 settled job **wakes** it — the model is told not to poll. A local watchdog terminates hung runs, and all
 timeouts interrupt: nothing ever waits forever.
+
+### Settlement does not lie
+
+In headless mode agy cannot show its permission prompt, so a **denied action
+still ends in `status: SUCCESS` with an empty answer**. The plugin treats
+"SUCCESS with no text" as a failure and says which action was denied and how
+to allow it (`skipPermissions` or an allowlist), instead of returning an empty
+bubble. Successful runs end with a delivery summary:
+
+```
+[agy] 7 steps · 2m 14s · 12.3k in / 1.1k out · 2 files changed: src/a.ts, src/b.ts
+```
+
+The file list comes from the write-style tool calls agy reports
+(`write_to_file` / `replace_file_content` / `multi_replace_file_content` /
+`sed_file`, …), so it does not depend on a clean git worktree.
 
 `antigravity_tasks` surfaces the durable registry (restart-safe) plus live
 in-flight runs, and `antigravity_cancel` stops a running one. The registry
@@ -234,6 +256,7 @@ agy process keeps running on the host either way.
 |---|---|
 | `authentication required` | complete the sign-in in the popped login window (or call `antigravity_login`), then retry |
 | `User location is not supported` | set a proxy (`proxy` config or `~/.dsh/agy-proxy.txt`) |
+| `SUCCESS but produced no answer` / `produced no answer text` | agy claimed success without a word: usually an action was blocked by headless permissions (see `denied_actions` in the message). Enable `skipPermissions` or allowlist it and retry; the attached `[agy] N steps …` line shows what it actually did |
 | `timeout waiting for response` | raise `printTimeoutMs` / `backgroundTimeoutMs`, or use `background: true` |
 | `agy exited 0 but produced no stdout` | known agy non-TTY bug; `--output-format json` avoids it (default) — upgrade agy if it persists |
 | `cannot resolve "agy"` | set `AGY_BIN` to the agy executable |

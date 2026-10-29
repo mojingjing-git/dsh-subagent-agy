@@ -8,7 +8,7 @@
  */
 import assert from 'node:assert/strict'
 
-const { MAX_STEPS, parseStepUpdate, mergeStep, mergeStepInto, snapshotSteps } = await import('../lib/agy-steps.js')
+const { MAX_STEPS, parseStepUpdate, mergeStep, mergeStepInto, snapshotSteps, filesTouched } = await import('../lib/agy-steps.js')
 
 let passed = 0
 const check = (name, fn) => {
@@ -172,6 +172,26 @@ check('snapshotSteps keeps a truncated tool preview stable', () => {
   const first = snapshotSteps(mergeStepInto([], big))
   const second = snapshotSteps(first)
   assert.equal(second[0].tool.preview, first[0].tool.preview)
+})
+
+check('filesTouched lists the files write/edit steps targeted, in order', () => {
+  const steps = [
+    parseStepUpdate({ step_index: 1, state: 'DONE', step_type: 'tool', tool_name: 'write_to_file', tool_info: { name: 'write_to_file', parameters: { TargetFile: 'C:\\repo\\src\\a.ts' } } }),
+    parseStepUpdate({ step_index: 2, state: 'DONE', step_type: 'tool', tool_name: 'view_file', tool_info: { name: 'view_file', parameters: { AbsolutePath: 'C:\\repo\\src\\unread.ts' } } }),
+    parseStepUpdate({ step_index: 3, state: 'DONE', step_type: 'tool', tool_name: 'replace_file_content', tool_info: { name: 'replace_file_content', parameters: { TargetFile: 'C:\\repo\\src\\b.md' } } }),
+    parseStepUpdate({ step_index: 4, state: 'DONE', step_type: 'tool', tool_name: 'multi_replace_file_content', tool_info: { name: 'multi_replace_file_content', parameters: { TargetFile: 'C:\\repo\\src\\a.ts' } } }),
+  ]
+  assert.deepEqual(filesTouched(steps), ['C:\\repo\\src\\a.ts', 'C:\\repo\\src\\b.md'])
+})
+
+check('filesTouched falls back to a path-looking value when the key is unknown', () => {
+  const step = parseStepUpdate({ step_index: 1, state: 'DONE', step_type: 'tool', tool_name: 'write_file', tool_info: { name: 'write_file', parameters: { MaybePath: 'notes/todo.md' } } })
+  assert.deepEqual(filesTouched([step]), ['notes/todo.md'])
+})
+
+check('filesTouched ignores read-only tools', () => {
+  const step = parseStepUpdate({ step_index: 1, state: 'DONE', step_type: 'tool', tool_name: 'grep_search', tool_info: { name: 'grep_search', parameters: { Query: 'src/index.ts' } } })
+  assert.deepEqual(filesTouched([step]), [])
 })
 
 console.log(`\n${passed} checks passed`)

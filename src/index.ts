@@ -73,7 +73,7 @@ import type { SessionId } from '@deepseek-ai/dsh-session'
 import type { Agent } from '@deepseek-ai/dsh-agent'
 import type { ContentBlock } from '@deepseek-ai/dsh-llm'
 import { dirname, isAbsolute, join, resolve } from 'node:path'
-import { mergeStepInto, parseStepUpdate, snapshotSteps, type StepEvent } from './agy-steps.js'
+import { filesTouched, mergeStepInto, parseStepUpdate, snapshotSteps, type StepEvent } from './agy-steps.js'
 import { homedir, tmpdir } from 'node:os'
 import { mkdirSync, readFileSync, renameSync, rmSync, statSync, writeFileSync } from 'node:fs'
 import { familyOfModel, spawnUsage, UsageReader } from './agy-usage.js'
@@ -685,6 +685,12 @@ interface AgyJsonReply {
   status?: string
   response?: string
   error?: string
+  /** Actions agy wanted and could not get permission for in headless mode. */
+  denied_actions?: unknown
+  /** Whole-run (cumulative) token counts, when the build reports them. */
+  usage?: Record<string, number>
+  num_turns?: number
+  duration_seconds?: number
 }
 
 /** Parse one candidate JSON object if it looks like an agy reply. */
@@ -947,6 +953,14 @@ export interface FollowupRequest {
   signal: AbortSignal
 }
 
+/** Per-call overrides of the configured model / reasoning level. */
+export interface SpawnOverrides {
+  /** agy model slug, or `auto` to keep the configured resolution. */
+  model?: string
+  /** One of `low | medium | high | xhigh | max`; empty omits `--effort`. */
+  effort?: string
+}
+
 /** Hooks shape registered with `ctx.jobs` for a background agy run (mirrors dsh-tool-pwsh's background adaptation). */
 export interface AntigravityBackgroundHandle {
   /** Stop the run (job_kill). */
@@ -1100,6 +1114,13 @@ class AntigravitySubagentProvider implements SubagentProvider {
     } finally {
       this.modelCatalogLoading = undefined
     }
+  }
+
+  /** A per-call model override; `auto` falls back to the configured resolution. */
+  private modelFor(override: string | undefined): string {
+    const requested = override?.trim() ?? ''
+    if (requested.length === 0 || requested.toLowerCase() === 'auto') return this.resolvedModel()
+    return requested
   }
 
   /**
@@ -1446,6 +1467,7 @@ class AntigravitySubagentProvider implements SubagentProvider {
     cwdOverride: string | undefined,
     dirs: readonly string[],
     timeoutMs: number,
+    overrides?: SpawnOverrides,
   ): Promise<SpawnPlan> {
     const { ctx, config } = this
     const addDirs = validateAddDirs(PREFIX, dirs, 'config/tool')
@@ -1515,18 +1537,19 @@ class AntigravitySubagentProvider implements SubagentProvider {
     }
     const baseArgv: string[] = [exe, ...promptArgv]
     if (support.durationTimeout || support.bareTimeout) baseArgv.push('--print-timeout', printTimeout)
-    const model = this.resolvedModel()
+    const model = this.modelFor(overrides?.model)
     if (model.length > 0) baseArgv.push('--model', model)
-    if (config.effort.length > 0) {
+    const effort = overrides?.effort?.trim() ?? config.effort
+    if (effort.length > 0) {
       // v5 — agy 1.4.6 accepts low | medium | high | xhigh | max. The old
       // three-value whitelist rejected `xhigh`/`max` outright, which made two
       // documented reasoning levels unusable. Warn on an unrecognized value but
       // still pass it through: agy is the authority on its own flag, and a
       // future build may add levels this plugin cannot know about.
-      if (!EFFORT_LEVELS.includes(config.effort)) {
-        ctx.logger.warn(`${PREFIX}: effort "${config.effort}" is not one of ${EFFORT_LEVELS.join(' | ')}; passing it to agy anyway`)
+      if (!EFFORT_LEVELS.includes(effort)) {
+        ctx.logger.warn(`${PREFIX}: effort "${effort}" is not one of ${EFFORT_LEVELS.join(' | ')}; passing it to agy anyway`)
       }
-      baseArgv.push('--effort', config.effort)
+      baseArgv.push('--effort', effort)
     }
     if (config.agent.length > 0) baseArgv.push('--agent', config.agent)
     if (config.skipPermissions) baseArgv.push('--dangerously-skip-permissions')
@@ -1567,8 +1590,15 @@ class AntigravitySubagentProvider implements SubagentProvider {
   }
 
   /** Tool-layer entry: new task plus extra workspace dirs (config.addDirs ∪ tool dirs). */
-  startWithDirs(request: SubagentStartRequest, extraDirs: readonly string[]): Promise<SubagentRun> {
-    return this.runOnce(request as ResolvedSubagentStartRequest, undefined, undefined, [...this.config.addDirs, ...extraDirs], this.config.printTimeoutMs)
+  startWithDirs(request: SubagentStartRequest, extraDirs: readonly string[], overrides?: SpawnOverrides): Promise<SubagentRun> {
+    return this.runOnce(
+      request as ResolvedSubagentStartRequest,
+      undefined,
+      undefined,
+      [...this.config.addDirs, ...extraDirs],
+      this.config.printTimeoutMs,
+      overrides,
+    )
   }
 
   /**
@@ -1576,8 +1606,59 @@ class AntigravitySubagentProvider implements SubagentProvider {
    * cwd. Same-conversation follow-ups are serialized per conversation id, so
    * concurrent prompts cannot corrupt one agy conversation file.
    */
-  followup(request: FollowupRequest, conversationId: string, cwd: string): Promise<SubagentRun> {
-    return this.followupSerialized(conversationId, () => this.runOnce(request as ResolvedSubagentStartRequest, conversationId, cwd, this.config.addDirs, this.config.printTimeoutMs))
+  followup(request: FollowupRequest, conversationId: string, cwd: string, overrides?: SpawnOverrides): Promise<SubagentRun> {
+    return this.followupSerialized(conversationId, () =>
+      this.runOnce(request as ResolvedSubagentStartRequest, conversationId, cwd, this.config.addDirs, this.config.printTimeoutMs, overrides),
+    )
+  }
+
+  /**
+   * Background follow-up: the same resume path, but as a job handle.
+   *
+   * The per-conversation gate is held until the job settles, not just until the
+   * handle exists: a background run still writes the one agy conversation file,
+   * so a second prompt may not start inside its window.
+   */
+  async startResumeBackground(
+    request: FollowupRequest,
+    conversationId: string,
+    cwd: string,
+    extraDirs: readonly string[],
+    overrides?: SpawnOverrides,
+  ): Promise<AntigravityBackgroundHandle> {
+    const prev = this.followupGates.get(conversationId) ?? Promise.resolve()
+    let release!: () => void
+    const gate = new Promise<void>((resolve) => {
+      release = resolve
+    })
+    this.followupGates.set(conversationId, gate)
+    const settleGate = (): void => {
+      release()
+      // Drop the gate only when nobody chained onto it after us.
+      if (this.followupGates.get(conversationId) === gate) this.followupGates.delete(conversationId)
+    }
+    try {
+      await prev
+    } catch {
+      // A failed predecessor must not block this run.
+    }
+    let handle: AntigravityBackgroundHandle
+    try {
+      const plan = await this.spawnPlan(
+        request as ResolvedSubagentStartRequest,
+        conversationId,
+        cwd,
+        [...this.config.addDirs, ...extraDirs],
+        this.config.backgroundTimeoutMs,
+        overrides,
+      )
+      handle = this.runBackgroundPlan(plan, this.config.backgroundTimeoutMs)
+    } catch (error) {
+      settleGate()
+      throw error
+    }
+    void handle.done.then(settleGate, settleGate)
+    return handle
   }
 
   private followupSerialized(conversationId: string, task: () => Promise<SubagentRun>): Promise<SubagentRun> {
@@ -1615,9 +1696,10 @@ class AntigravitySubagentProvider implements SubagentProvider {
     cwdOverride: string | undefined,
     dirs: readonly string[],
     timeoutMs: number,
+    overrides?: SpawnOverrides,
   ): Promise<SubagentRun> {
     const { ctx, config } = this
-    const plan = await this.spawnPlan(request, conversationId, cwdOverride, dirs, timeoutMs)
+    const plan = await this.spawnPlan(request, conversationId, cwdOverride, dirs, timeoutMs, overrides)
 
     // Local cancellation state: dispose() may settle teardown without the
     // request signal firing, so a killed agy must still land on 'aborted'.
@@ -1742,8 +1824,33 @@ class AntigravitySubagentProvider implements SubagentProvider {
         if (parsed !== undefined) {
           const conversation = parsed.conversation_id
           if (parsed.status === 'SUCCESS' && typeof parsed.response === 'string') {
+            const denied = describeDenials(parsed.denied_actions)
+            const steps = stepsFromStdout(stdout)
             this.remember(plan.id, conversation, plan.childCwd, plan.label, plan.model)
-            return { output: textBlocks(parsed.response), stopReason: 'completed', transcript: transcriptPath }
+            const summary = formatRunSummary({
+              steps,
+              durationSeconds: parsed.duration_seconds,
+              usage: parsed.usage,
+              turns: parsed.num_turns,
+            })
+            // SUCCESS with no text is agy reporting a run it could not finish
+            // (a denied action in headless mode, or dropped non-TTY output), not
+            // a clean answer. The step summary still travels with the error so
+            // the caller can see what the child actually did.
+            if (parsed.response.trim().length === 0) {
+              const detail = explainEmptyResult({ denied, stderr, transcript: transcriptPath })
+              return {
+                output: textBlocks([detail, summary ?? ''].filter((part) => part.length > 0).join('\n\n')),
+                stopReason: 'error',
+                transcript: transcriptPath,
+              }
+            }
+            const notes: string[] = []
+            if (denied.length > 0) {
+              notes.push(`agy denied ${denied.length} action${denied.length === 1 ? '' : 's'}: ${denied.join(', ')} — enable skipPermissions or allowlist them to let the child act.`)
+            }
+            const body = [parsed.response, notes.join('\n'), summary ?? ''].filter((part) => part.length > 0).join('\n\n')
+            return { output: textBlocks(body), stopReason: 'completed', transcript: transcriptPath }
           }
           const detail = this.maybeAutoLogin(
             typeof parsed.error === 'string' && parsed.error.length > 0
@@ -1852,9 +1959,16 @@ class AntigravitySubagentProvider implements SubagentProvider {
    * `conversation_id` from the init event, and persists the task record when
    * done. The final read carries a `[task: ...]` line for follow-ups.
    */
-  async startBackground(request: SubagentStartRequest, extraDirs: readonly string[]): Promise<AntigravityBackgroundHandle> {
+  async startBackground(request: SubagentStartRequest, extraDirs: readonly string[], overrides?: SpawnOverrides): Promise<AntigravityBackgroundHandle> {
     const { config } = this
-    const plan = await this.spawnPlan(request as ResolvedSubagentStartRequest, undefined, undefined, extraDirs, config.backgroundTimeoutMs)
+    const plan = await this.spawnPlan(
+      request as ResolvedSubagentStartRequest,
+      undefined,
+      undefined,
+      extraDirs,
+      config.backgroundTimeoutMs,
+      overrides,
+    )
     return this.runBackgroundPlan(plan, config.backgroundTimeoutMs)
   }
 
@@ -1900,8 +2014,14 @@ class AntigravitySubagentProvider implements SubagentProvider {
     let finalStatus: string | undefined
     let finalResponse: string | undefined
     let finalError: string | undefined
+    let finalDenied: unknown[] = []
+    let finalUsage: Record<string, number> | undefined
+    let finalTurns: number | undefined
+    let finalDuration: number | undefined
     let taskLine = ''
     let taskLineEmitted = false
+    /** Step/usage footer composed by the settlement branch, appended last. */
+    let summaryText = ''
     let handle: SubprocessHandle | undefined
     let watchdog: NodeJS.Timeout | undefined
     let cancelledByRequest = false
@@ -1984,20 +2104,45 @@ class AntigravitySubagentProvider implements SubagentProvider {
       if (event === 'result') {
         const payload = (obj as { result?: unknown }).result
         if (payload !== null && typeof payload === 'object') {
-          const p = payload as { status?: unknown; response?: unknown; error?: unknown }
+          const p = payload as {
+            status?: unknown
+            response?: unknown
+            error?: unknown
+            denied_actions?: unknown
+            usage?: unknown
+            num_turns?: unknown
+            duration_seconds?: unknown
+          }
           if (typeof p.status === 'string') finalStatus = p.status
           if (typeof p.response === 'string') finalResponse = p.response
           if (typeof p.error === 'string') finalError = p.error
+          if (Array.isArray(p.denied_actions)) finalDenied = p.denied_actions
+          if (p.usage !== null && typeof p.usage === 'object') finalUsage = p.usage as Record<string, number>
+          if (typeof p.num_turns === 'number') finalTurns = p.num_turns
+          if (typeof p.duration_seconds === 'number') finalDuration = p.duration_seconds
         }
         return
       }
       // Bare `--output-format json` reply (fallback when stream-json is
       // unavailable): the whole object is the final result.
-      const p = obj as { conversation_id?: unknown; status?: unknown; response?: unknown; error?: unknown }
+      const p = obj as {
+        conversation_id?: unknown
+        status?: unknown
+        response?: unknown
+        error?: unknown
+        denied_actions?: unknown
+        usage?: unknown
+        num_turns?: unknown
+        duration_seconds?: unknown
+      }
       if (typeof p.conversation_id === 'string' && p.conversation_id.length > 0) conversationId = p.conversation_id
       if (typeof p.status === 'string') finalStatus = p.status
       if (typeof p.response === 'string') finalResponse = p.response
       if (typeof p.error === 'string') finalError = p.error
+      if (Array.isArray(p.denied_actions)) finalDenied = p.denied_actions
+      if (p.usage !== null && typeof p.usage === 'object') finalUsage = p.usage as Record<string, number>
+      if (typeof p.num_turns === 'number') finalTurns = p.num_turns
+      if (typeof p.duration_seconds === 'number') finalDuration = p.duration_seconds
     }
 
     const spawnOnce = (): void => {
@@ -2049,8 +2194,26 @@ class AntigravitySubagentProvider implements SubagentProvider {
           // signal marker, so an explicit cancellation is tracked directly.
           detail = cancelledByRequest ? 'cancelled by request' : `signal: ${outcome.signal}`
         } else if (finalStatus === 'SUCCESS') {
-          status = 'completed'
-          detail = 'completed'
+          const denied = describeDenials(finalDenied)
+          // `visible` carries progress markers ("[agy: tool step done]"), so it
+          // is never empty after a real run — the answer is what streamed.
+          const empty = !sawDelta && (finalResponse === undefined || finalResponse.trim().length === 0)
+          const summary = formatRunSummary({ steps, durationSeconds: finalDuration, usage: finalUsage, turns: finalTurns })
+          if (empty) {
+            // The job contract has no partial-output channel on failure, so the
+            // summary goes into the detail: the caller sees what ran even when
+            // agy produced no answer.
+            status = 'failed'
+            detail = [explainEmptyResult({ denied }), summary ?? ''].filter((part) => part.length > 0).join(' — ')
+          } else {
+            status = 'completed'
+            detail = 'completed'
+            const notes: string[] = []
+            if (denied.length > 0) {
+              notes.push(`agy denied ${denied.length} action${denied.length === 1 ? '' : 's'}: ${denied.join(', ')} — enable skipPermissions or allowlist them to let the child act.`)
+            }
+            summaryText = [...notes, summary ?? ''].filter((part) => part.length > 0).join('\n\n')
+          }
         } else {
           status = 'completed'
           detail = this.maybeAutoLogin(
@@ -2080,6 +2243,9 @@ class AntigravitySubagentProvider implements SubagentProvider {
       // the final response when the fallback (json/text) mode delivered none.
       if (finalResponse !== undefined && finalResponse.length > 0 && !sawDelta) {
         appendVisible(finalResponse)
+      }
+      if (summaryText.length > 0) {
+        appendVisible(`${visible.length === 0 ? '' : '\n\n'}${summaryText}`)
       }
       return { status, detail }
     })()
@@ -2156,6 +2322,109 @@ function stopReasonError(result: SubagentResult): string | undefined {
 function withPartialText(error: string, output: readonly { type: string; text?: string }[]): string {
   const text = output.filter((block) => block.type === 'text').map((block) => block.text ?? '').join('')
   return text.length === 0 ? error : `${error}\nPartial output before the run ended:\n${text}`
+}
+
+/** The action names agy listed as denied, normalized to short labels. */
+function describeDenials(value: unknown): string[] {
+  if (!Array.isArray(value)) return []
+  const out: string[] = []
+  for (const entry of value) {
+    if (typeof entry === 'string') {
+      const trimmed = entry.trim()
+      if (trimmed.length > 0) out.push(trimmed)
+      continue
+    }
+    if (entry === null || typeof entry !== 'object') continue
+    const record = entry as Record<string, unknown>
+    for (const key of ['display_name', 'action', 'tool', 'name']) {
+      const candidate = record[key]
+      if (typeof candidate === 'string' && candidate.trim().length > 0) {
+        out.push(candidate.trim())
+        break
+      }
+    }
+  }
+  return [...new Set(out)]
+}
+
+/**
+ * Why a `SUCCESS` reply with no text is not a success.
+ *
+ * agy reports SUCCESS even when headless mode denied the only action it needed,
+ * which used to surface as an empty answer the caller could not act on.
+ */
+function explainEmptyResult(input: { denied: readonly string[]; stderr?: string; transcript?: string }): string {
+  const raw = input.transcript === undefined ? '' : ` Raw stream: ${input.transcript}.`
+  if (input.denied.length > 0) {
+    return `agy reported SUCCESS but produced no answer: it needed permission for ${input.denied.join(', ')}, and headless mode cannot show agy's prompt, so the action was denied. Enable \`skipPermissions\` (--dangerously-skip-permissions) or allowlist that tool, then retry.${raw}`
+  }
+  const stderr = input.stderr?.trim() ?? ''
+  return `agy reported SUCCESS but produced no answer text${stderr.length > 0 ? ` (stderr: ${stderr})` : ''}. It may have dropped its output on a non-TTY pipe, or finished without writing a reply. Read the transcript before treating the task as done.${raw}`
+}
+
+/** Parse the step timeline out of a finished foreground run's stdout. */
+function stepsFromStdout(stdout: string): StepEvent[] {
+  let steps: StepEvent[] = []
+  for (const line of stdout.split('\n')) {
+    const trimmed = line.trim()
+    if (!trimmed.startsWith('{')) continue
+    let parsed: unknown
+    try {
+      parsed = JSON.parse(trimmed)
+    } catch {
+      // A non-JSON line (agy sometimes appends a plain-text trailer).
+      continue
+    }
+    if (parsed === null || typeof parsed !== 'object') continue
+    const record = parsed as { event?: unknown; step_update?: unknown }
+    if (record.event !== 'step_update') continue
+    const step = parseStepUpdate(record.step_update)
+    if (step !== undefined) steps = mergeStepInto(steps, step)
+  }
+  return steps
+}
+
+function compactTokens(count: number): string {
+  if (count >= 1_000_000) return `${(count / 1_000_000).toFixed(1)}M`
+  if (count >= 1000) return `${(count / 1000).toFixed(1)}k`
+  return String(count)
+}
+
+function formatSeconds(seconds: number): string {
+  if (seconds >= 3600) return `${(seconds / 3600).toFixed(1)} h`
+  if (seconds >= 60) return `${Math.floor(seconds / 60)}m ${Math.round(seconds % 60)}s`
+  return `${Math.round(seconds)}s`
+}
+
+/**
+ * One compact line describing what a run did, so the caller can judge a run
+ * without reading the whole answer: steps, wall clock, tokens, changed files.
+ */
+function formatRunSummary(input: {
+  steps: readonly StepEvent[]
+  durationSeconds?: number
+  usage?: Record<string, number> | null
+  turns?: number
+}): string | undefined {
+  const parts: string[] = []
+  if (input.steps.length > 0) parts.push(`${input.steps.length} step${input.steps.length === 1 ? '' : 's'}`)
+  if (input.durationSeconds !== undefined && Number.isFinite(input.durationSeconds) && input.durationSeconds > 0) {
+    parts.push(formatSeconds(input.durationSeconds))
+  }
+  if (input.turns !== undefined && input.turns > 0) parts.push(`${input.turns} turn${input.turns === 1 ? '' : 's'}`)
+  const inputTokens = input.usage?.input_tokens
+  const outputTokens = input.usage?.output_tokens
+  if (typeof inputTokens === 'number' || typeof outputTokens === 'number') {
+    parts.push(`${compactTokens(inputTokens ?? 0)} in / ${compactTokens(outputTokens ?? 0)} out`)
+  }
+  const files = filesTouched(input.steps)
+  if (files.length > 0) {
+    const shown = files.slice(0, 6).join(', ')
+    parts.push(
+      `${files.length} file${files.length === 1 ? '' : 's'} changed: ${shown}${files.length > 6 ? ` (+${files.length - 6} more)` : ''}`,
+    )
+  }
+  return parts.length === 0 ? undefined : `[agy] ${parts.join(' · ')}`
 }
 
 /** Collect and release one foreground run without letting disposal replace an independent result failure. */
@@ -2260,18 +2529,31 @@ export function apply(ctx: Context, config: Config): void {
         defineTool({
           name: config.toolName,
           description:
-            'Create a delegated sub-agent task: delegate to Google Antigravity CLI (agy) — a separate Gemini-powered coding agent on this machine, authenticated with your Antigravity account (no API key). \n\nUse this whenever the user asks to dispatch / delegate / launch / spin up / hand off work to another agent, or wants a second agent to do a self-contained job ("派个 agent" / "委托给别的模型" / "让 agy 干"). This plugin is `@dsh-external/dsh-subagent-antigravity` (mount id `dsh-subagent-antigravity`); it registers the tools `antigravity`, `antigravity_followup`, `antigravity_tasks`, `antigravity_cancel`, `antigravity_login`. It is a TOOL, not a skill: do not look for it in the skills list. The user often calls this \"subagent\", \"agy\", \"antigravity\", \"AGY CLI\", \"Google Antigravity\", \"dsh-subagent-agy\", or \"dsh-subagent-antigravity\". \n\nHow it differs from the built-in `subagent` / `subagent_fork` tools: those run a local child agent in this same DSH process and inherit this conversation; this one runs an independent external agent over the agy CLI, does not see this conversation (hence the standalone prompt), and can be resumed later with `antigravity_followup` via the returned `task` key. It works in the parent session\'s workspace and returns its final answer; give it a complete, standalone prompt because it does not see this conversation. The result carries a `task` key: pass it to antigravity_followup to continue this conversation later. If the task targets files OUTSIDE the session workspace (e.g. another project), pass their absolute directory paths in `dirs` — without it, headless agy cannot reach them and will hang until its timeout. Every prompt gets appended environment notes telling agy NOT to use its headless browser tools (they can hang; config `avoidBrowser`, default true) and NOT to read files larger than 1 MB with its read tool (it fails above 4 MB; config `avoidLargeReads`, default true — agy should use grep/sed/run_command instead). When a task genuinely needs a browser preview, say so and have the user set avoidBrowser: false. If a run fails with "authentication required", a login window opens automatically on the machine (config autoLoginWindow, default true) — tell the user to complete the sign-in, or call ' + config.loginToolName + ' to open it manually. Foreground runs are cut off at a ' + formatMs(config.printTimeoutMs) + ' ceiling (agy --print-timeout; configurable via printTimeoutMs) and force-killed ' + formatMs(config.watchdogMarginMs) + ' later if hung. For long tasks use `background: true`: you are woken in-session when the job settles, so start it, then keep working on independent steps instead of polling (see the background parameter). Poll job_output only when you are genuinely blocked on the result, and report agy\'s live progress when you do. Do not duplicate the running job\'s work or end the turn silently. List running/recent tasks with ' + config.tasksToolName + ', and stop a running one with ' + config.cancelToolName + '.',
+            'Delegate a self-contained task to Google Antigravity CLI (agy) — a separate Gemini-powered coding agent on this machine, signed in with your Antigravity account (no API key). It works in this workspace but does not see this conversation, so send a complete, standalone prompt (files, paths, acceptance criteria, what to return). Use it to dispatch or hand off work ("派个 agent" / "委托给别的模型"), to get a second model on the same problem, or to run a long job in the background. It returns the final answer plus a `task` key; resume it with `antigravity(task: ...)`. With `background: true` the call returns a jobId and you are notified when it settles — do not poll. This is a tool, not a skill.',
           parameters: {
             description: {
               type: 'string',
-              required: true,
-              description: 'A short (3-5 word) description of the delegated task, for display.',
+              description: 'A short (3-5 word) description of the delegated task, for display. Required for a new task; optional when resuming with `task`.',
             },
             prompt: {
               type: 'string',
               required: true,
               description:
                 'The complete, self-contained task for Antigravity. It does not share this conversation\'s context, so include everything it needs (files, paths, acceptance criteria, and what to return). Keep it under 30000 characters.',
+            },
+            task: {
+              type: 'string',
+              description:
+                'Optional. Resume a previous task instead of starting a new one: pass the `task` key returned by an earlier call (or its [task: ...] line). The prompt is then a follow-up instruction — the child still remembers everything it did.',
+            },
+            model: {
+              type: 'string',
+              description:
+                'Optional model slug for this call only (e.g. `gemini-3.8-flash-high`, `claude-sonnet-4-6`, `gpt-oss-120b-medium`), or `auto` to keep the configured choice. Omit to inherit the plugin config.',
+            },
+            effort: {
+              type: 'string',
+              description: 'Optional reasoning level for this call only: low | medium | high | xhigh | max. Omit to inherit the plugin config.',
             },
             dirs: {
               type: 'array',
@@ -2309,13 +2591,74 @@ export function apply(ctx: Context, config: Config): void {
             },
           },
           isConcurrencySafe: () => true,
-          async execute(args: { description: string; prompt: string; dirs?: string[]; background?: boolean }, exec: ToolRunContext) {
+          async execute(
+            args: { description?: string; prompt: string; task?: string; model?: string; effort?: string; dirs?: string[]; background?: boolean },
+            exec: ToolRunContext,
+          ) {
             const parent = exec.agent
             if (!parent) throw new Error(`${PREFIX}: antigravity tool requires a calling agent (exec.agent was undefined)`)
             const provider = ctx.subagents.getProvider(config.providerName) as AntigravitySubagentProvider | undefined
             if (!(provider instanceof AntigravitySubagentProvider)) {
               throw new Error(`${PREFIX}: provider "${config.providerName}" is not the antigravity provider`)
             }
+            const overrides: SpawnOverrides = { model: args.model, effort: args.effort }
+            // Resume path: `task` turns this call into a follow-up, with the
+            // same background support and per-call model overrides.
+            if (args.task !== undefined && args.task.trim().length > 0) {
+              const task = args.task.trim()
+              const record = loadTaskRegistry(config)[task]
+              if (record === undefined) {
+                throw new Error(
+                  `${PREFIX}: no such task "${task}" — run the antigravity tool first (task keys survive DSH restarts via ~/.dsh/agy-conversations.json)`,
+                )
+              }
+              // jobs.start rejects an empty label, so the record (and then the
+              // key itself) backs up the optional description.
+              const label = args.description?.trim() || record.label || task
+              const request: FollowupRequest = {
+                label,
+                prompt: [{ type: 'text' as const, text: args.prompt }],
+                parent,
+                signal: exec.signal,
+              }
+              if (args.background === true) {
+                const jobs = ctx.get('jobs')
+                if (jobs === undefined) {
+                  throw new Error(`${PREFIX}: background jobs unavailable — load @deepseek-ai/dsh-jobs and @deepseek-ai/dsh-tool-jobs`)
+                }
+                const bg = await provider.startResumeBackground(request, record.conversationId, record.cwd, args.dirs ?? [], overrides)
+                let jobId: string
+                try {
+                  jobId = jobs.start({ kind: 'antigravity', label, owner: parent.session.id, run: () => bg })
+                } catch (error) {
+                  bg.cancel()
+                  throw error
+                }
+                return { kind: 'background', jobId, task }
+              }
+              const settled = await settleForegroundRun(await provider.followup(request, record.conversationId, record.cwd, overrides))
+              const refreshed = provider.recordOf(settled.runId)
+              await updateTaskRegistry(config, (records) => {
+                records[task] = {
+                  ...record,
+                  createdAt: Date.now(),
+                  ...(refreshed !== undefined ? { conversationId: refreshed.conversationId, ...(refreshed.model !== undefined ? { model: refreshed.model } : {}) } : {}),
+                }
+              }, ctx.logger)
+              return {
+                ...settled,
+                task,
+                ...(refreshed?.conversationId !== undefined
+                  ? { conversationId: refreshed.conversationId }
+                  : record.conversationId !== undefined
+                    ? { conversationId: record.conversationId }
+                    : {}),
+              }
+            }
+            if (args.description === undefined || args.description.trim().length === 0) {
+              throw new Error(`${PREFIX}: description is required for a new task — pass one, or resume an existing task with \`task\``)
+            }
+            const label = args.description.trim()
             if (args.background === true) {
               const jobs = ctx.get('jobs')
               if (jobs === undefined) {
@@ -2323,18 +2666,19 @@ export function apply(ctx: Context, config: Config): void {
               }
               const bg = await provider.startBackground(
                 {
-                  label: args.description,
+                  label,
                   prompt: [{ type: 'text' as const, text: args.prompt }],
                   parent,
                   signal: exec.signal,
                 },
                 args.dirs ?? [],
+                overrides,
               )
               let jobId: string
               try {
                 jobId = jobs.start({
                   kind: 'antigravity',
-                  label: args.description,
+                  label,
                   // `owner` is a SessionId, not the Agent object: dsh-jobs-local
                   // resolves it with `agents.get(session)` and throws
                   // `session "[object Object]" has no live agent` when handed an
@@ -2352,12 +2696,13 @@ export function apply(ctx: Context, config: Config): void {
             const settled = await settleForegroundRun(
               await provider.startWithDirs(
                 {
-                  label: args.description,
+                  label,
                   prompt: [{ type: 'text' as const, text: args.prompt }],
                   parent,
                   signal: exec.signal,
                 },
                 args.dirs ?? [],
+                overrides,
               ),
             )
             const record = provider.recordOf(settled.runId)
@@ -2390,7 +2735,7 @@ export function apply(ctx: Context, config: Config): void {
         defineTool({
           name: config.followupToolName,
           description:
-            'Continue a previously created delegated sub-agent task (Antigravity / agy) in the same conversation: the child agent resumes with its full prior context. Use this when the user wants to follow up with, ask more of, or redirect an agent that was already dispatched — it is the only way to reach that agent again (the built-in `subagent` tools cannot resume an agy task). Use the `task` key returned by the antigravity tool (foreground result or the [task: ...] line of a background job), or list recorded keys with ' + config.tasksToolName + ' (they survive DSH restarts). Each follow-up is one new prompt in that conversation; the response is the agent\'s final text for this turn. This call blocks until agy answers — it is a normal tool call, not a background job, so the call itself is the wait. Same ' + formatMs(config.printTimeoutMs) + ' run ceiling as the antigravity tool; keep prompts under 30000 characters.',
+            'Resume a previously dispatched Antigravity task in the same conversation: the child keeps its full prior context, so state only what is new. Pass the `task` key from the antigravity result or its [task: ...] line (keys survive DSH restarts). Blocks until agy answers, same run ceiling as antigravity. Equivalent to `antigravity(task: ...)`.',
           parameters: {
             description: {
               type: 'string',

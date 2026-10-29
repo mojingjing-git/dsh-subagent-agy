@@ -55,17 +55,20 @@ web client 扩展，需要重启一次 DSH 才会出现**；升级安装包后�
 
 | 用途 | 工具 | 说明 |
 |---|---|---|
-| 新任务 | `antigravity` | 把独立任务委托给 agy（新对话）；返回 `task` 键 |
-| 续聊 | `antigravity_followup` | 通过 `task` 键继续之前的 agy 对话——上下文完整延续 |
+| 派任务 / 续聊 | `antigravity` | 新任务直接给 `prompt`；带 `task` 键则续聊同一对话（上下文完整延续），两种用法都支持 `background: true` |
+| 续聊（旧名） | `antigravity_followup` | `antigravity({ task, prompt })` 的别名，保留向后兼容 |
 | 任务列表 | `antigravity_tasks` | 列出运行中 + 最近完成的任务；`task` 键在 DSH 重启后仍然有效 |
 | 取消任务 | `antigravity_cancel` | 用 `task` 键停止一个运行中的任务（终止 agy 进程树） |
 | 登录 | `antigravity_login` | 弹出 agy 交互式登录窗口（认证失败时也会自动弹出） |
+
+每次调用还可以临时指定 `model`（如 `claude-sonnet-4-6`）和 `effort`
+（`low` / `medium` / `high` / `xhigh` / `max`），只对这一次运行生效，不改全局配置。
 
 示例：
 
 > "用 agy 把 `D:\projects\my-project` 的 README 重写一遍，列出改动。"
 >
-> "用 antigravity 优化这个项目的页面"
+> "用 antigravity 优化这个项目的页面，这次用 claude-sonnet-4-6、effort 拉满。"
 
 ### 识图
 
@@ -193,6 +196,21 @@ dsh-subagent-antigravity:
 文件会先备份一次（`*.corrupt`）再重置，绝不会被静默覆盖；所有注册表
 写入都是串行化的，并发运行不会互相丢失记录。
 
+### 结算不撒谎
+
+agy 在无 TTY 的 headless 模式下无法弹权限审批，**被拒的动作仍会得到
+`status: SUCCESS`，但回答是空的**。插件把「SUCCESS 但没有一个字」判为失败，
+并说清楚是哪一步被拒（`denied_actions`）、怎么放行（`skipPermissions` 或
+允许清单），而不是回一个空气泡。成功时正文末尾带一行交付摘要：
+
+```
+[agy] 7 steps · 2m 14s · 12.3k in / 1.1k out · 2 files changed: src/a.ts, src/b.ts
+```
+
+文件清单来自 agy 自报的写入类工具调用（`write_to_file` /
+`replace_file_content` / `multi_replace_file_content` / `sed_file` 等），
+不依赖工作区是否干净。
+
 侧边栏面板由两部分组成：host 侧在 `webServer` 可用后注册 `/api-agy/*` 的 JSON
 路由（额度、会话、运行中任务、续跑、停止），client 侧是一个独立的
 `lib/client.js`（通过 `exports["./client"]` + `dsh.client` 声明）。面板里的
@@ -208,6 +226,7 @@ dsh-subagent-antigravity:
 |---|---|
 | `authentication required` | 在自动弹出的登录窗口里完成登录（或调用 `antigravity_login`），然后重试 |
 | `User location is not supported` | 配置代理（`proxy` 或 `~/.dsh/agy-proxy.txt`） |
+| `SUCCESS but produced no answer` / `produced no answer text` | agy 说成功但一个字都没给：多半是动作被 headless 权限挡了（看消息里的 `denied_actions`），开 `skipPermissions` 或加允许清单后重试；消息里附带的 `[agy] N steps …` 说明它实际做了什么 |
 | `timeout waiting for response` | 调大 `printTimeoutMs` / `backgroundTimeoutMs`，或改用 `background: true` |
 | `agy exited 0 but produced no stdout` | 已知的 agy 非 TTY 输出丢失 bug；默认的 `--output-format json` 可规避——仍出现就升级 agy |
 | `cannot resolve "agy"` | 设置 `AGY_BIN` 指向 agy 可执行文件 |

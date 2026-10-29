@@ -280,6 +280,52 @@ switch (scenario) {
     break
   }
 
+  case 'denied': {
+    // Headless permission denial: agy still reports SUCCESS, with an empty
+    // answer and the action it could not get permission for. The plugin must
+    // surface that instead of an empty bubble.
+    const denied = [{ action: 'command', display_name: 'run_command' }]
+    if (format === 'stream-json') {
+      emit(initEvent)
+      emit(stepDone(0, 'user_input'))
+      emit({ event: 'result', result: { conversation_id: conv, status: 'SUCCESS', response: '', num_turns: 1, duration_seconds: 1, denied_actions: denied } })
+    } else if (format === 'json') {
+      process.stdout.write(`${JSON.stringify({ conversation_id: conv, status: 'SUCCESS', response: '', denied_actions: denied })}\n`)
+    }
+    break
+  }
+
+  case 'empty-success': {
+    // SUCCESS with no text and no denied action: the non-TTY output-loss case.
+    if (format === 'stream-json') {
+      emit(initEvent)
+      emit(stepDone(0, 'user_input'))
+      emit({ event: 'result', result: { conversation_id: conv, status: 'SUCCESS', response: '' } })
+    } else if (format === 'json') {
+      process.stdout.write(`${JSON.stringify({ conversation_id: conv, status: 'SUCCESS', response: '' })}\n`)
+    }
+    break
+  }
+
+  case 'denied-with-text': {
+    // The agent hit a permission wall, then answered anyway: the run is a
+    // success, but the denial has to be disclosed.
+    const denied = [{ action: 'command', display_name: 'run_command' }]
+    if (format === 'stream-json') {
+      emit(initEvent)
+      emit(stepDone(0, 'user_input'))
+      emit({
+        event: 'step_update',
+        step_update: { step_index: 1, state: 'ACTIVE', step_type: 'agent_response', text_delta: 'I could not run that command.' },
+      })
+      emit(stepDone(1, 'agent_response', { duration_seconds: 1, usage: { input_tokens: 10, output_tokens: 5 } }))
+      emit({ event: 'result', result: { conversation_id: conv, status: 'SUCCESS', response: 'I could not run that command.', denied_actions: denied } })
+    } else if (format === 'json') {
+      process.stdout.write(`${JSON.stringify({ conversation_id: conv, status: 'SUCCESS', response: 'I could not run that command.', denied_actions: denied })}\n`)
+    }
+    break
+  }
+
   case 'hang': {
     emit(initEvent)
     // Never finishes: the watchdog must terminate the tree.
