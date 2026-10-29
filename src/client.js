@@ -439,7 +439,37 @@ window.__ModuleLoader__.load({
                 : '这个会话没有记录步骤。',
             )
           : null,
-        steps.map((step) => h(StepRow, { key: step.index, step })),
+        steps.map((step, position) => {
+          // agy keeps every run of a conversation in one transcript and
+          // restarts its step numbers, so a new run shows up as a new round.
+          const previous = position === 0 ? null : steps[position - 1]
+          const newRound =
+            typeof step.round === 'number' &&
+            (previous === null || previous.round !== step.round)
+          return h(
+            React.Fragment,
+            { key: step.index },
+            newRound
+              ? h(
+                  'div',
+                  {
+                    style: {
+                      display: 'flex',
+                      alignItems: 'center',
+                      gap: 6,
+                      margin: '8px 0 4px',
+                      fontSize: 9,
+                      color: C.dimmer,
+                    },
+                  },
+                  h('span', { style: { flex: 1, height: '1px', background: C.border } }),
+                  h('span', null, `第 ${step.round + 1} 轮`),
+                  h('span', { style: { flex: 1, height: '1px', background: C.border } }),
+                )
+              : null,
+            h(StepRow, { step }),
+          )
+        }),
       )
     }
 
