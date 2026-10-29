@@ -29,12 +29,22 @@
  *
  * What cannot: exact timestamps (the schema has no time column) and any text
  * that agy itself never wrote down.
+ *
+ * agy keeps a second, plainer copy of the same conversation:
+ *
+ *   ~/.gemini/antigravity-cli/brain/<conversation-id>/.system_generated/logs/transcript.jsonl
+ *
+ * — one JSON object per step, one to one with the rows of the `steps` table.
+ * It carries what the database cannot: the token counters, a real timestamp,
+ * the tool arguments, the model's reasoning and the reply itself. When it is
+ * there it is the better source, and the database fills the gaps.
  */
 
 import { copyFileSync, existsSync, mkdtempSync, rmSync } from 'node:fs'
 import { tmpdir } from 'node:os'
 import { join } from 'node:path'
 import type { StepEvent, StepTool } from './agy-steps.js'
+import { readTranscript, sumUsage, transcriptToSteps } from './agy-transcript.js'
 
 /** agy's numeric step types as seen in the conversation database. */
 const STEP_TYPES: Record<number, string> = {
@@ -63,16 +73,18 @@ export const MAX_HISTORY_STEPS = 200
 /** Characters kept per step text. */
 const MAX_HISTORY_TEXT = 4096
 
-/** One conversation's timeline, as far as the database can tell it. */
+/** One conversation's timeline, as far as agy can tell it. */
 export interface ConversationHistory {
   conversationId: string
   steps: StepEvent[]
   /** How many steps the conversation really has — may exceed `steps.length`. */
   stepCount: number
   /** Where the timeline came from. */
-  source: 'database' | 'missing' | 'unreadable'
+  source: 'database' | 'transcript' | 'merged' | 'missing' | 'unreadable'
   /** Why the timeline is empty, when it is. */
   error?: string
+  /** The token counters of the whole conversation. */
+  totals?: { inputTokens: number; outputTokens: number; cacheReadTokens: number }
 }
 
 // ── protobuf decoding ───────────────────────────────────────────────────────
@@ -415,20 +427,19 @@ function decodeStep(row: StepRow, replyBody: string | null): StepEvent {
   }
 }
 
-/**
- * Read a conversation's step timeline from agy's database.
- *
- * Never throws: a missing or locked database yields an empty timeline with a
- * reason, because the panel must still render the conversation list.
- */
-export async function readConversationHistory(
+/** The steps of a conversation, read from agy's database. */
+interface DatabaseSteps {
+  steps: StepEvent[]
+  stepCount: number
+  source: 'database' | 'missing' | 'unreadable'
+  error?: string
+}
+
+async function readDatabaseSteps(
   conversationId: string,
   conversationsDir: string,
-): Promise<ConversationHistory> {
-  const empty: ConversationHistory = { conversationId, steps: [], stepCount: 0, source: 'missing' }
-  if (!/^[0-9a-fA-F-]{8,64}$/.test(conversationId)) {
-    return { ...empty, source: 'unreadable', error: 'invalid conversation id' }
-  }
+): Promise<DatabaseSteps> {
+  const empty: DatabaseSteps = { steps: [], stepCount: 0, source: 'missing' }
   const path = join(conversationsDir, `${conversationId}.db`)
   if (!existsSync(path)) return empty
 
@@ -466,13 +477,7 @@ export async function readConversationHistory(
       steps.push(decodeStep(row, replyBody))
     }
 
-    const window = steps.length > MAX_HISTORY_STEPS ? steps.slice(steps.length - MAX_HISTORY_STEPS) : steps
-    return {
-      conversationId,
-      steps: window,
-      stepCount: steps.length,
-      source: 'database',
-    }
+    return { steps, stepCount: steps.length, source: 'database' }
   } catch (error) {
     return {
       ...empty,
@@ -481,5 +486,81 @@ export async function readConversationHistory(
     }
   } finally {
     opened.cleanup()
+  }
+}
+
+/**
+ * Read a conversation's step timeline.
+ *
+ * The transcript is the better source where it exists — it knows the token
+ * counters, the time and the tool arguments. The database fills in whatever
+ * the transcript does not have, mainly the reply body of a step the transcript
+ * only recorded as "the model thought".
+ *
+ * Never throws: a missing or locked database yields an empty timeline with a
+ * reason, because the panel must still render the conversation list.
+ */
+export async function readConversationHistory(
+  conversationId: string,
+  conversationsDir: string,
+  brainDir?: string,
+): Promise<ConversationHistory> {
+  const empty: ConversationHistory = { conversationId, steps: [], stepCount: 0, source: 'missing' }
+  if (!/^[0-9a-fA-F-]{8,64}$/.test(conversationId)) {
+    return { ...empty, source: 'unreadable', error: 'invalid conversation id' }
+  }
+
+  const database = await readDatabaseSteps(conversationId, conversationsDir)
+  const rows = brainDir === undefined ? null : await readTranscript(conversationId, brainDir)
+
+  if (rows === null) {
+    // No transcript: the database is all there is.
+    const window = database.steps.length > MAX_HISTORY_STEPS
+      ? database.steps.slice(database.steps.length - MAX_HISTORY_STEPS)
+      : database.steps
+    return {
+      conversationId,
+      steps: window,
+      stepCount: database.stepCount,
+      source: database.source,
+      ...(database.error === undefined ? {} : { error: database.error }),
+    }
+  }
+
+  const transcriptSteps = transcriptToSteps(rows)
+  const byIndex = new Map(database.steps.map((step) => [step.index, step]))
+
+  const merged: StepEvent[] = transcriptSteps.map((step) => {
+    const fallback = byIndex.get(step.index)
+    if (fallback === undefined) return step
+    // The reply wins where the transcript has one; the database fills the gap.
+    // A step whose only "text" is the name of the model has no body to show.
+    const text = step.text.trim().length > 0
+      ? step.text
+      : fallback.text.trim().length > 0 && !looksLikeModelName(fallback.text)
+        ? fallback.text
+        : ''
+    return {
+      ...step,
+      text,
+      tool: step.tool ?? fallback.tool,
+      state: step.state === 'DONE' ? fallback.state : step.state,
+    }
+  })
+
+  // Steps the database knows and the transcript does not are still worth showing.
+  const known = new Set(transcriptSteps.map((step) => step.index))
+  for (const step of database.steps) {
+    if (!known.has(step.index)) merged.push(step)
+  }
+  merged.sort((a, b) => a.index - b.index)
+
+  const window = merged.length > MAX_HISTORY_STEPS ? merged.slice(merged.length - MAX_HISTORY_STEPS) : merged
+  return {
+    conversationId,
+    steps: window,
+    stepCount: Math.max(merged.length, database.stepCount),
+    source: database.source === 'database' ? 'merged' : 'transcript',
+    totals: sumUsage(merged),
   }
 }

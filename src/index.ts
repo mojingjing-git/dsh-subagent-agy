@@ -2243,6 +2243,7 @@ export function apply(ctx: Context, config: Config): void {
     baseCwd: configuredCwd ?? process.cwd(),
     conversationsDir: join(antigravityHome, 'conversations'),
     annotationsDir: join(antigravityHome, 'annotations'),
+    brainDir: join(antigravityHome, 'brain'),
     summariesDbPath: join(antigravityHome, 'conversation_summaries.db'),
     prefsPath: join(pluginBaseDir(), 'agy-panel.json'),
     loadRecords: () => loadTaskRegistry(config, ctx.logger),

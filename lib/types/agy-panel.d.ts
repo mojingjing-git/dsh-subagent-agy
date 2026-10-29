@@ -16,6 +16,12 @@ export interface AgyPanelDeps {
     baseCwd: string;
     conversationsDir: string;
     annotationsDir: string;
+    /**
+     * `~/.gemini/antigravity-cli/brain` — agy's own transcript of every
+     * conversation. It carries the token counters and the timestamps that the
+     * conversation database does not have.
+     */
+    brainDir: string;
     /** `~/.gemini/antigravity-cli/conversation_summaries.db` */
     summariesDbPath: string;
     /** Where the panel keeps hidden conversation ids. */

@@ -52,6 +52,12 @@ export interface AgyPanelDeps {
   baseCwd: string
   conversationsDir: string
   annotationsDir: string
+  /**
+   * `~/.gemini/antigravity-cli/brain` — agy's own transcript of every
+   * conversation. It carries the token counters and the timestamps that the
+   * conversation database does not have.
+   */
+  brainDir: string
   /** `~/.gemini/antigravity-cli/conversation_summaries.db` */
   summariesDbPath: string
   /** Where the panel keeps hidden conversation ids. */
@@ -410,12 +416,12 @@ export function registerAgyPanel(ctx: Context, deps: AgyPanelDeps): void {
     }),
 
     // The step timeline of a conversation that is not running any more — read
-    // back from agy's own database.
+    // back from agy's own transcript, with the database filling the gaps.
     jsonRoute('/api-agy/history', async ({ body }) => {
       const input = body as { conversationId?: unknown } | null
       const conversationId = typeof input?.conversationId === 'string' ? input.conversationId : ''
       if (conversationId.length === 0) return bad('conversationId is required')
-      const history = await readConversationHistory(conversationId, deps.conversationsDir)
+      const history = await readConversationHistory(conversationId, deps.conversationsDir, deps.brainDir)
       return ok({ ...history })
     }),
 

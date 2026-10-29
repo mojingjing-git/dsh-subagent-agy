@@ -29,20 +29,35 @@
  *
  * What cannot: exact timestamps (the schema has no time column) and any text
  * that agy itself never wrote down.
+ *
+ * agy keeps a second, plainer copy of the same conversation:
+ *
+ *   ~/.gemini/antigravity-cli/brain/<conversation-id>/.system_generated/logs/transcript.jsonl
+ *
+ * — one JSON object per step, one to one with the rows of the `steps` table.
+ * It carries what the database cannot: the token counters, a real timestamp,
+ * the tool arguments, the model's reasoning and the reply itself. When it is
+ * there it is the better source, and the database fills the gaps.
  */
 import type { StepEvent } from './agy-steps.js';
 /** Steps kept per conversation — the same window the live timeline uses. */
 export declare const MAX_HISTORY_STEPS = 200;
-/** One conversation's timeline, as far as the database can tell it. */
+/** One conversation's timeline, as far as agy can tell it. */
 export interface ConversationHistory {
     conversationId: string;
     steps: StepEvent[];
     /** How many steps the conversation really has — may exceed `steps.length`. */
     stepCount: number;
     /** Where the timeline came from. */
-    source: 'database' | 'missing' | 'unreadable';
+    source: 'database' | 'transcript' | 'merged' | 'missing' | 'unreadable';
     /** Why the timeline is empty, when it is. */
     error?: string;
+    /** The token counters of the whole conversation. */
+    totals?: {
+        inputTokens: number;
+        outputTokens: number;
+        cacheReadTokens: number;
+    };
 }
 /**
  * Is this only the name of the model that answered?
@@ -53,9 +68,14 @@ export interface ConversationHistory {
  */
 export declare function looksLikeModelName(text: string): boolean;
 /**
- * Read a conversation's step timeline from agy's database.
+ * Read a conversation's step timeline.
+ *
+ * The transcript is the better source where it exists — it knows the token
+ * counters, the time and the tool arguments. The database fills in whatever
+ * the transcript does not have, mainly the reply body of a step the transcript
+ * only recorded as "the model thought".
  *
  * Never throws: a missing or locked database yields an empty timeline with a
  * reason, because the panel must still render the conversation list.
  */
-export declare function readConversationHistory(conversationId: string, conversationsDir: string): Promise<ConversationHistory>;
+export declare function readConversationHistory(conversationId: string, conversationsDir: string, brainDir?: string): Promise<ConversationHistory>;

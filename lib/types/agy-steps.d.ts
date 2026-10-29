@@ -61,6 +61,14 @@ export interface StepEvent {
      * from a finished conversation have no time at all.
      */
     at?: number;
+    /**
+     * The model's reasoning, when agy kept it.
+     *
+     * It is never the reply itself: a step carries its reply in `text`.
+     */
+    thinking?: string;
+    /** Fields agy had to cut short, e.g. `['content']`. */
+    truncated?: string[];
 }
 /**
  * One `step_update` payload → a step.
