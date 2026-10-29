@@ -9,7 +9,7 @@
  * 就只能靠真实数据碰运气。
  */
 import assert from 'node:assert/strict'
-import { mkdirSync, mkdtempSync, readdirSync, rmSync } from 'node:fs'
+import { mkdirSync, mkdtempSync, readdirSync, rmSync, writeFileSync } from 'node:fs'
 import { tmpdir } from 'node:os'
 import { join } from 'node:path'
 import { DatabaseSync } from 'node:sqlite'
@@ -115,6 +115,48 @@ try {
     const missing = await readConversationHistory('99999999-8888-7777-6666-555555555555', dir)
     assert.equal(missing.source, 'missing')
     assert.deepEqual(missing.steps, [])
+  })
+
+  // A conversation agy ran twice keeps both runs in one transcript file and
+  // restarts its step numbers, while the database numbers the whole
+  // conversation continuously. The two cannot be lined up, and a reply next
+  // to the wrong step is worse than no reply at all.
+  await check('a conversation that was run twice is shown from the transcript alone', async () => {
+    const brain = join(dir, 'brain')
+    const logs = join(brain, conversationId, '.system_generated', 'logs')
+    mkdirSync(logs, { recursive: true })
+    const line = (stepIndex, type, content, extra = {}) => JSON.stringify({
+      step_index: stepIndex,
+      source: 'MODEL',
+      type,
+      status: 'DONE',
+      created_at: '2026-10-29T01:16:00Z',
+      content,
+      ...extra,
+    })
+    writeFileSync(
+      join(logs, 'transcript.jsonl'),
+      [
+        line(0, 'USER_INPUT', 'first run'),
+        line(1, 'PLANNER_RESPONSE', 'first answer', { input_tokens: 100, output_tokens: 20 }),
+        line(0, 'USER_INPUT', 'second run'),
+        line(1, 'PLANNER_RESPONSE', 'second answer', { input_tokens: 300, output_tokens: 40 }),
+      ].join('\n'),
+      'utf8',
+    )
+
+    const withTranscript = await readConversationHistory(conversationId, dir, brain)
+    assert.equal(withTranscript.source, 'transcript')
+    assert.equal(withTranscript.steps.length, 4)
+    assert.deepEqual(withTranscript.steps.map((step) => step.index), [0, 1, 2, 3])
+    assert.deepEqual(withTranscript.steps.map((step) => step.round), [0, 0, 1, 1])
+    assert.equal(withTranscript.steps[0].text, 'first run')
+    assert.equal(withTranscript.steps[3].text, 'second answer')
+    assert.deepEqual(withTranscript.totals, {
+      inputTokens: 400,
+      outputTokens: 60,
+      cacheReadTokens: 0,
+    })
   })
 
   // A copy that dies between "temp dir created" and "database opened" must

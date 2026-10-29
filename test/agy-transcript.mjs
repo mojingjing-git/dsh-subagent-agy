@@ -82,8 +82,27 @@ try {
   check('every line becomes one row with its own index', () => {
     assert.equal(rows.length, 4)
     assert.deepEqual(rows.map((row) => row.index), [0, 1, 2, 3])
+    assert.deepEqual(rows.map((row) => row.seq), [0, 1, 2, 3])
     assert.equal(rows[0].type, 'USER_INPUT')
     assert.equal(rows[1].type, 'PLANNER_RESPONSE')
+  })
+
+  check('a second run of the same conversation starts over', () => {
+    // agy restarts step_index at zero on every run and keeps both runs in
+    // one file, so the numbers repeat while the position does not.
+    const second = parseTranscript(
+      `${LINES[0]}\n${LINES[1]}\n${JSON.stringify({
+        step_index: 0,
+        source: 'USER_EXPLICIT',
+        type: 'USER_INPUT',
+        status: 'DONE',
+        created_at: '2026-10-25T01:00:00Z',
+        content: '再来一次。',
+      })}`,
+    )
+    assert.deepEqual(second.map((row) => row.index), [0, 1, 0])
+    assert.deepEqual(second.map((row) => row.seq), [0, 1, 2])
+    assert.deepEqual(second.map((row) => row.round), [0, 0, 1])
   })
 
   check('a broken line is skipped, the rest survives', () => {
