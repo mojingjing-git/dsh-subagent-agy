@@ -6,13 +6,48 @@ This fork (`mojingjing-git/dsh-subagent-agy`) carries the patches below.
 
 The patches now live in **TypeScript source** (`src/index.ts`), not hand-edited
 into the compiled bundle: the fork ships the source, a `tsc` build
-(`npm run build`), an offline suite (`test/run.mjs`, 113 assertions against a
+(`npm run build`), an offline suite (`test/run.mjs`, 135 assertions against a
 simulated agy), ten panel suites (`npm run test:panel`, 101 checks) and an
 end-to-end suite (`test/e2e-real.mjs`, 13 assertions against the installed `agy`).
 
 The package name (`@dsh-external/dsh-subagent-antigravity`) and the Cordis mount
 id (`dsh-subagent-antigravity`) never change, so this build drops in where the
-upstream release was. Version: `0.2.0-patched.15`.
+upstream release was. Version: `0.2.0-patched.16`.
+
+## v16 — settlement does not lie, short descriptions, one entry point
+
+Four changes aimed at the same thing: the tool should be pleasant enough that
+the model reaches for it, and honest enough that its result can be trusted.
+
+- **A — an empty answer is a failure.** In headless mode agy cannot show its
+  permission prompt, so a denied action ends in `status: SUCCESS` with
+  `response: ""` and a `denied_actions` list. Both settlement paths used to read
+  only `status` and report `completed` — the caller got an empty bubble.
+  `explainEmptyResult()` now names the denied actions and how to allow them
+  (`skipPermissions` or an allowlist), and the step summary rides along with the
+  error so the caller still sees what ran. A run that answered but was denied
+  something stays `completed`, with the denial disclosed in the body.
+- **B — the description is a prompt, not a manual.** `antigravity`'s
+  description dropped from ~2000 characters of failure modes and mount ids to
+  ~640 characters of "when to delegate, what to send, what you get back"; the
+  environment notes are appended internally at registration time.
+  `antigravity_followup` dropped to one line.
+- **C — `antigravity` is the entry point for both modes.**
+  `antigravity({ prompt })` starts a task, `antigravity({ task, prompt })`
+  resumes it, and `background: true` works either way (resume used to lack it).
+  `model` and `effort` may be overridden per call without touching the config;
+  `antigravity_followup` stays as an alias so old prompts keep working.
+- **D — every success ends with a delivery summary.** `[agy] 7 steps · 2m 14s ·
+  12.3k in / 1.1k out · 2 files changed: src/a.ts, src/b.ts`. Steps come from the
+  in-memory `stdout` of a finished foreground run (the shim's stdio is collect
+  mode, so there is no stream to subscribe to); files come from agy's own
+  write-style tool calls (`write_to_file`, `replace_file_content`,
+  `multi_replace_file_content`, `sed_file`, …), never from `git diff`, so a
+  dirty or non-git workspace cannot produce a false list.
+
+Tests: `npm test` 135/135 — including `denied` / `empty-success` /
+`denied-with-text` scenarios that fail if an empty answer is ever reported as
+success again — plus the ten panel suites and two `filesTouched` unit checks.
 
 ## v14 — tokens and timestamps, read from agy's own transcript
 
