@@ -12,7 +12,35 @@ end-to-end suite (`test/e2e-real.mjs`, 13 assertions against the installed `agy`
 
 The package name (`@dsh-external/dsh-subagent-antigravity`) and the Cordis mount
 id (`dsh-subagent-antigravity`) never change, so this build drops in where the
-upstream release was. Version: `0.2.0-patched.16`.
+upstream release was. Version: `0.2.0-patched.17`.
+
+## v17 — what the account actually spends, both stores included
+
+The panel could already show tokens **per conversation**, but not the number
+that answers "roughly how much quota is a Pro plan": the total.
+
+- `src/agy-usage-log.ts` scans every `transcript.jsonl` under
+  `~/.gemini/antigravity-cli/brain` **and** `~/.gemini/antigravity/brain`, which
+  is the Antigravity IDE's store — those conversations never appear in this
+  panel, yet they spend the same account. On this machine the IDE contributes
+  ~19.6M input / 2.2M output / 311.9M cache reads against the CLI's 4.4M / 488k
+  / 34.4M, so counting only the CLI under-reports by roughly 4x.
+- The counters are **per-step increments**, verified on real data: input climbs
+  step by step, then drops to a few thousand with the difference recorded as
+  `cache_read_tokens` once the prefix is cached. Summing is therefore correct,
+  and cache reads have to be summed too — they are most of the volume. The
+  headline is `input + output + cacheRead`; the breakdown sits underneath so the
+  discounted part stays visible.
+- Rolling window: seven local calendar days ending today, zero-filled, plus a
+  separate all-time total with its start date. Days are bucketed by local
+  calendar day (not by 24h slices), so a DST shift cannot produce a 23-hour day.
+- Cost control: an on-disk index keyed by `(mtime, size)` — a cold scan of ~150
+  transcripts takes a few hundred milliseconds, later refreshes re-read only the
+  files agy appended to. The scan never writes to agy's store; the cache lives
+  beside the plugin.
+- New route `GET /api-agy/token-usage`; new panel card under the quota cards.
+  History is bounded by agy's own retention (about a week here), so the all-time
+  line is labelled "local readable", not "lifetime".
 
 ## v16 — settlement does not lie, short descriptions, one entry point
 

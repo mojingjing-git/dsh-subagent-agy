@@ -224,6 +224,93 @@ window.__ModuleLoader__.load({
       )
     }
 
+    // ── token totals ──────────────────────────────────────────────────────────
+    /** 12_345_678 → "12.3M" — these numbers run to nine digits in a day. */
+    const compactTokens = (value) => {
+      if (typeof value !== 'number' || !Number.isFinite(value)) return '—'
+      if (value >= 1e9) return `${(value / 1e9).toFixed(2)}B`
+      if (value >= 1e6) return `${(value / 1e6).toFixed(2)}M`
+      if (value >= 1e3) return `${(value / 1e3).toFixed(1)}k`
+      return String(Math.round(value))
+    }
+    const dayLabel = (day) => (typeof day === 'string' && day.length === 10 ? day.slice(5) : '')
+
+    /**
+     * What the account has spent. `total` counts cache reads: they are the bulk
+     * of the volume, and leaving them out is what makes a "token count" look
+     * harmless while the quota drains.
+     */
+    function TokenCard({ tokens }) {
+      const window = tokens && tokens.window ? tokens.window : null
+      const all = tokens && tokens.allTime ? tokens.allTime : null
+      const days = tokens && Array.isArray(tokens.days) ? tokens.days : []
+      const peak = days.reduce((max, day) => Math.max(max, day.total || 0), 0)
+      const title = 'agy 的每次运行都会在 transcript 里留下 input/output/cache 计数；这里把 CLI 与 IDE 两个会话库加在一起'
+      return h(
+        'div',
+        { title, style: { padding: '10px 12px 10px', borderBottom: `1px solid ${C.border}` } },
+        h(
+          'div',
+          { style: { display: 'flex', alignItems: 'center', gap: 8, marginBottom: 6 } },
+          h('span', { style: { fontSize: 12, fontWeight: 600, color: C.text } }, 'Token 消耗'),
+          tokens && tokens.allTime ? h('span', { style: { fontSize: 10, color: C.dimmer } }, `近 ${tokens.windowDays} 天`) : null,
+          tokens && tokens.files > 0
+            ? h('span', { style: { marginLeft: 'auto', fontSize: 10, color: C.dimmer } }, `${tokens.files} 个会话`)
+            : null,
+        ),
+        tokens && tokens.error
+          ? h('div', { style: { fontSize: 10, color: C.danger } }, `读取失败：${tokens.error}`)
+          : !window
+            ? h('div', { style: { fontSize: 11, color: C.dimmer, padding: '4px 0' } }, '统计中…')
+            : h(
+              'div',
+              null,
+              h(
+                'div',
+                { style: { display: 'flex', alignItems: 'baseline', gap: 6 } },
+                h('span', { style: { fontSize: 22, fontWeight: 600, color: C.text, lineHeight: 1.2 } }, compactTokens(window.total)),
+                h('span', { style: { fontSize: 11, color: C.dim } }, '总消耗（含缓存）'),
+              ),
+              h(
+                'div',
+                { style: { fontSize: 10, color: C.dim, marginTop: 2 } },
+                `输入 ${compactTokens(window.input)} · 输出 ${compactTokens(window.output)} · 缓存读 ${compactTokens(window.cacheRead)}`,
+              ),
+              days.length > 0
+                ? h(
+                  'div',
+                  { style: { display: 'flex', alignItems: 'flex-end', gap: 3, height: 34, margin: '8px 0 2px' } },
+                  days.map((day) => h('div', {
+                    key: day.day,
+                    title: `${day.day} · ${compactTokens(day.total)}（入 ${compactTokens(day.input)} / 出 ${compactTokens(day.output)} / 缓存 ${compactTokens(day.cacheRead)}）`,
+                    style: {
+                      flex: 1,
+                      height: `${peak > 0 ? Math.max(2, Math.round((day.total / peak) * 32)) : 2}px`,
+                      background: day.total > 0 ? C.accent : C.border,
+                      borderRadius: 2,
+                      opacity: day.total > 0 ? 0.85 : 0.5,
+                    },
+                  })),
+                )
+                : null,
+              days.length > 0
+                ? h(
+                  'div',
+                  { style: { display: 'flex', gap: 3, fontSize: 9, color: C.dimmer } },
+                  days.map((day) => h('span', { key: day.day, style: { flex: 1, textAlign: 'center' } }, dayLabel(day.day))),
+                )
+                : null,
+            ),
+        all
+          ? h(
+            'div',
+            { style: { fontSize: 10, color: C.dimmer, marginTop: 6 } },
+            `本地总计 ${compactTokens(all.total)}（入 ${compactTokens(all.input)} / 出 ${compactTokens(all.output)} / 缓存 ${compactTokens(all.cacheRead)}）${all.from ? ` · 自 ${all.from}` : ''}`,
+          )
+          : null,
+      )
+    }
+
     // ── history timeline ──────────────────────────────────────────────────────
     const STEP_LABEL = {
       user_input: '你',
@@ -531,6 +618,7 @@ window.__ModuleLoader__.load({
       const [items, setItems] = useState([])
       const [listError, setListError] = useState(null)
       const [usage, setUsage] = useState(null)
+      const [tokens, setTokens] = useState(null)
       const [refreshing, setRefreshing] = useState(false)
       const [active, setActive] = useState([])
       const [selected, setSelected] = useState(null)
@@ -581,13 +669,21 @@ window.__ModuleLoader__.load({
           .finally(() => setRefreshing(false))
       }, [])
 
+      const loadTokens = useCallback(() => {
+        post('/token-usage', {})
+          .then((payload) => setTokens(payload))
+          .catch(() => {})
+      }, [])
+
       useEffect(() => {
         loadConversations()
         loadUsage(false)
+        loadTokens()
         const conversations = setInterval(loadConversations, 20000)
         const usageTimer = setInterval(() => loadUsage(false), 30000)
-        return () => { clearInterval(conversations); clearInterval(usageTimer) }
-      }, [loadConversations, loadUsage])
+        const tokenTimer = setInterval(loadTokens, 60000)
+        return () => { clearInterval(conversations); clearInterval(usageTimer); clearInterval(tokenTimer) }
+      }, [loadConversations, loadUsage, loadTokens])
 
       useEffect(() => {
         let alive = true
@@ -684,7 +780,7 @@ window.__ModuleLoader__.load({
         'div',
         { style: { display: 'flex', flexDirection: 'column', height: '100%', minHeight: 0, color: C.text } },
         h(UsageCards, { usage, refreshing, onRefresh: () => loadUsage(true) }),
-
+        h(TokenCard, { tokens }),
         h(
           'div',
           { style: { flex: 1, minHeight: 0, display: 'flex', flexDirection: 'column' } },

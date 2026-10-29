@@ -117,6 +117,24 @@ configured model** (hover for the reset time). Clicking it opens the
   (single-flight — many open panes still spawn one agy); the card's refresh
   button forces a new probe, and the cards say **when** the numbers were read —
   the probe is slow, and stale numbers should be obvious at a glance.
+- **Token spend card**, for estimating what a Pro plan actually gives you: it
+  adds up every agy conversation on the machine, not just the ones this plugin
+  ran — the Antigravity IDE's store
+  (`~/.gemini/antigravity/brain`) spends the same account quota, and leaving it
+  out under-counts a normal day by roughly 4x. The headline is the **total
+  including cache reads**, broken down into input / output / cache on the next
+  line, with seven daily bars below it (rolling window, bucketed by local
+  calendar day, zero-filled) and a **local all-time total** with its start date
+  at the bottom.
+  On the numbers: transcript counters are **per-step increments** (input climbs,
+  then drops to a few thousand with the rest recorded as cache reads once the
+  prefix is cached), so summing is correct; cache reads are billed at a
+  discount but are most of the volume, so they count towards the total and are
+  listed separately. The history on disk is bounded by agy's own retention
+  (~a week today), so the all-time line is "what is readable locally", not the
+  account's lifetime. The scan is read-only with an (mtime, size) index: a cold
+  150-conversation scan takes a few hundred ms, later refreshes only read new
+  files.
 - **Conversation list**: only conversations **this plugin** ran
   (`~/.dsh/agy-conversations.json`), with title, time, working directory, model
   and run state. The plugin's own test records are filtered out.

@@ -77,6 +77,7 @@ import { filesTouched, mergeStepInto, parseStepUpdate, snapshotSteps, type StepE
 import { homedir, tmpdir } from 'node:os'
 import { mkdirSync, readFileSync, renameSync, rmSync, statSync, writeFileSync } from 'node:fs'
 import { familyOfModel, spawnUsage, UsageReader } from './agy-usage.js'
+import { readTokenUsage } from './agy-usage-log.js'
 import {
   MODEL_CACHE_TTL_MS,
   parseModels,
@@ -2519,6 +2520,12 @@ export function apply(ctx: Context, config: Config): void {
     listActive: () => provider.listActive(),
     peekUsage: () => usageReader.peek(),
     readUsage: (force) => usageReader.read(force),
+    // Both stores, because the Antigravity IDE spends the same quota and never
+    // shows up in this panel's conversation list.
+    tokenUsage: () => readTokenUsage({
+      roots: [join(antigravityHome, 'brain'), join(homedir(), '.gemini', 'antigravity', 'brain')],
+      cachePath: join(pluginBaseDir(), 'agy-token-cache.json'),
+    }),
     startRun: (input) => provider.startPanelRun(input),
   })
 

@@ -1,6 +1,7 @@
 import type { Context } from '@deepseek-ai/cordis';
 import type { AntigravityBackgroundHandle, PanelRunInput, TaskRecord } from './index.js';
 import type { UsageReport } from './agy-usage.js';
+import type { TokenUsageReport } from './agy-usage-log.js';
 /** One active run as reported by the provider's task layer. */
 export interface ActiveRunInfo {
     task: string;
@@ -30,6 +31,8 @@ export interface AgyPanelDeps {
     listActive(): ActiveRunInfo[];
     peekUsage(): UsageReport | null;
     readUsage(force?: boolean): Promise<UsageReport>;
+    /** Rolling token totals over every agy store on this machine. */
+    tokenUsage(): TokenUsageReport;
     startRun(input: PanelRunInput): Promise<AntigravityBackgroundHandle>;
 }
 /** Register the panel's JSON routes once the optional web server exists. */

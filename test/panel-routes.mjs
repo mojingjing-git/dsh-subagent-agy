@@ -74,6 +74,15 @@ const deps = {
   listActive: () => (running ? [{ task: 'panel-1', label: 'x', cwd: projectDir, background: true, startedAt: Date.now() }] : []),
   peekUsage: () => usageReader.peek(),
   readUsage: (force) => usageReader.read(force),
+  tokenUsage: () => ({
+    scannedAt: Date.now(),
+    windowDays: 7,
+    days: [{ day: '2026-10-29', input: 100, output: 10, cacheRead: 900, total: 1010, steps: 2 }],
+    window: { input: 100, output: 10, cacheRead: 900, total: 1010, steps: 2 },
+    allTime: { input: 100, output: 10, cacheRead: 900, total: 1010, steps: 2, from: '2026-10-29', to: '2026-10-29', conversations: 2 },
+    files: 2,
+    reused: 0,
+  }),
   startRun: async (input) => {
     assert.equal(input.conversationId, conversationId)
     assert.equal(input.cwd, projectDir)
@@ -91,6 +100,7 @@ assert.deepEqual([...routes.keys()].sort(), [
   '/api-agy/prefs',
   '/api-agy/run',
   '/api-agy/running',
+  '/api-agy/token-usage',
   '/api-agy/usage',
 ])
 for (const route of routes.values()) assert.equal(route.kind, 'exact')
@@ -182,6 +192,15 @@ try {
   await check('a same-origin request is accepted', async () => {
     const res = await call('/api-agy/usage', {}, { origin: 'http://127.0.0.1:6193' })
     assert.equal(res.status, 200)
+  })
+
+  await check('token totals travel as their own envelope', async () => {
+    const { status, json } = await call('/api-agy/token-usage', {})
+    assert.equal(status, 200)
+    assert.equal(json.window.total, 1010)
+    assert.equal(json.window.cacheRead, 900)
+    assert.equal(json.days.length, 1)
+    assert.equal(json.allTime.conversations, 2)
   })
 
   await check('conversations drop fake rows and carry model + cwd state', async () => {

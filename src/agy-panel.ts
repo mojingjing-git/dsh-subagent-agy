@@ -23,6 +23,7 @@ import { listConversations, type ConversationItem } from './agy-conversations.js
 import { readConversationHistory } from './agy-history.js'
 import { readConversationSummaries } from './agy-summaries.js'
 import type { UsageReport } from './agy-usage.js'
+import type { TokenUsageReport } from './agy-usage-log.js'
 import type { StepEvent } from './agy-steps.js'
 
 /** The slice of `@deepseek-ai/dsh-host-webserver` this module needs. */
@@ -66,6 +67,8 @@ export interface AgyPanelDeps {
   listActive(): ActiveRunInfo[]
   peekUsage(): UsageReport | null
   readUsage(force?: boolean): Promise<UsageReport>
+  /** Rolling token totals over every agy store on this machine. */
+  tokenUsage(): TokenUsageReport
   startRun(input: PanelRunInput): Promise<AntigravityBackgroundHandle>
 }
 
@@ -388,6 +391,18 @@ export function registerAgyPanel(ctx: Context, deps: AgyPanelDeps): void {
         loading: true,
       }
       return ok({ ...report, loading: peeked === null })
+    }),
+
+    // Totals are cheap to recompute (one stat per transcript, cached by
+    // mtime+size) so this route never blocks on agy and needs no TTL.
+    jsonRoute('/api-agy/token-usage', () => {
+      try {
+        return ok(deps.tokenUsage() as unknown as Record<string, unknown>)
+      } catch (error) {
+        // A broken store must not blank the panel: report what happened and
+        // let the card say "unavailable" instead of throwing a 500 envelope.
+        return ok({ error: error instanceof Error ? error.message : String(error), scannedAt: Date.now(), windowDays: 7, days: [], window: null, allTime: null, files: 0, reused: 0 })
+      }
     }),
 
     jsonRoute('/api-agy/conversations', async () => {
