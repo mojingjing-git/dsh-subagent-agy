@@ -12,7 +12,27 @@ end-to-end suite (`test/e2e-real.mjs`, 13 assertions against the installed `agy`
 
 The package name (`@dsh-external/dsh-subagent-antigravity`) and the Cordis mount
 id (`dsh-subagent-antigravity`) never change, so this build drops in where the
-upstream release was. Version: `0.2.0-patched.17`.
+upstream release was. Version: `0.2.0-patched.18`.
+
+## v18 — what a percentage point is worth
+
+Tokens alone do not answer "how much is a month". The quota answers in percent.
+This version connects them.
+
+- `src/agy-quota-log.ts` appends one line per quota row whenever `/usage` returns
+  something new (beside the plugin, `agy-quota-log.jsonl`): `t`, `family`,
+  `window`, `percent`, `resetAt`. Unchanged readings within 30 minutes are not
+  written, so five-minute polling costs a handful of lines a day, not hundreds.
+- `estimateQuota()` walks the log per row and keeps only snapshots inside **one
+  reset window** — a reset makes the percentage jump, and a delta across it would
+  be nonsense. `tokens ÷ percentage points consumed` gives tokens per point;
+  ×100 is the window's estimated capacity.
+- The token figure in that ratio is the **whole account's** spend in the same
+  span: attributing tokens per model family would mean reading every
+  conversation's model, and a per-family error would silently inflate the
+  estimate. The card labels the number as approximate for that reason.
+- The token card gains a "额度换算（近似）" section: `已用 16% ≈ 18.3M tokens →
+  100% ≈ 114M`, or "攒数据中" until a row has two comparable snapshots.
 
 ## v17 — what the account actually spends, both stores included
 

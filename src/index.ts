@@ -78,6 +78,7 @@ import { homedir, tmpdir } from 'node:os'
 import { mkdirSync, readFileSync, renameSync, rmSync, statSync, writeFileSync } from 'node:fs'
 import { familyOfModel, spawnUsage, UsageReader } from './agy-usage.js'
 import { readTokenUsage } from './agy-usage-log.js'
+import { appendQuotaSnapshot, estimateQuota, readQuotaLog, type QuotaSnapshot } from './agy-quota-log.js'
 import {
   MODEL_CACHE_TTL_MS,
   parseModels,
@@ -2508,6 +2509,8 @@ export function apply(ctx: Context, config: Config): void {
     },
   })
   const antigravityHome = join(homedir(), '.gemini', 'antigravity-cli')
+  /** Last snapshot written per quota row, so polling does not spam the log. */
+  const quotaSnapshots = new Map<string, QuotaSnapshot>()
   registerAgyPanel(ctx, {
     sessionId: 'panel:agy',
     baseCwd: configuredCwd ?? process.cwd(),
@@ -2519,13 +2522,25 @@ export function apply(ctx: Context, config: Config): void {
     loadRecords: () => loadTaskRegistry(config, ctx.logger),
     listActive: () => provider.listActive(),
     peekUsage: () => usageReader.peek(),
-    readUsage: (force) => usageReader.read(force),
+    readUsage: async (force) => {
+      const report = await usageReader.read(force)
+      // One line per row per change: the only way to learn what a percentage
+      // point is worth later on.
+      appendQuotaSnapshot(join(pluginBaseDir(), 'agy-quota-log.jsonl'), report, Date.now(), quotaSnapshots)
+      return report
+    },
     // Both stores, because the Antigravity IDE spends the same quota and never
     // shows up in this panel's conversation list.
-    tokenUsage: () => readTokenUsage({
-      roots: [join(antigravityHome, 'brain'), join(homedir(), '.gemini', 'antigravity', 'brain')],
-      cachePath: join(pluginBaseDir(), 'agy-token-cache.json'),
-    }),
+    tokenUsage: () => {
+      const report = readTokenUsage({
+        roots: [join(antigravityHome, 'brain'), join(homedir(), '.gemini', 'antigravity', 'brain')],
+        cachePath: join(pluginBaseDir(), 'agy-token-cache.json'),
+      })
+      return {
+        ...report,
+        quota: estimateQuota(readQuotaLog(join(pluginBaseDir(), 'agy-quota-log.jsonl')), report.days, Date.now()),
+      }
+    },
     startRun: (input) => provider.startPanelRun(input),
   })
 
