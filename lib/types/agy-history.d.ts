@@ -73,7 +73,11 @@ export declare function looksLikeModelName(text: string): boolean;
  * The transcript is the better source where it exists — it knows the token
  * counters, the time and the tool arguments. The database fills in whatever
  * the transcript does not have, mainly the reply body of a step the transcript
- * only recorded as "the model thought".
+ * only recorded as "the model thought". That fill-in is only possible when
+ * both sources describe the same number of steps: agy restarts its step
+ * numbers on every run of a conversation, so a conversation that was run twice
+ * is shown from the transcript alone rather than with a reply next to the
+ * wrong step.
  *
  * Never throws: a missing or locked database yields an empty timeline with a
  * reason, because the panel must still render the conversation list.

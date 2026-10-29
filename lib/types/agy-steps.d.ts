@@ -42,8 +42,22 @@ export interface StepTool {
 }
 /** One step of one run. */
 export interface StepEvent {
-    /** agy's `step_index` — the stable identity of the step inside its run. */
+    /**
+     * The step's number.
+     *
+     * In the live timeline this is agy's `step_index` — the stable identity of
+     * the step inside its run. In a transcript read back from disk it is the
+     * position of the step in the file, because agy restarts `step_index` on
+     * every run of the same conversation.
+     */
     index: number;
+    /**
+     * Which run of the conversation the step belongs to, counted from zero.
+     *
+     * Only the transcript knows it: agy keeps one file per conversation and
+     * appends every run to it.
+     */
+    round?: number;
     /** `ACTIVE` while it runs, then `DONE` or `ERROR`. */
     state: string;
     /** `user_input`, `agent_response`, `tool`, … — agy's own vocabulary. */

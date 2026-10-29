@@ -8,8 +8,12 @@
  * the tool calls with their arguments, the model's reasoning and the reply
  * itself.
  *
- * The two sources line up one to one: the transcript's `step_index` is the
- * SQLite `steps.idx` of the same step. That is what lets the panel merge them.
+ * The two sources describe the same steps, but they do not number them the
+ * same way: agy restarts `step_index` at zero on every run of a conversation
+ * and keeps the whole history in one file, while the SQLite database numbers
+ * the steps of the conversation continuously. So the transcript is numbered by
+ * its own position in the file, and the two are only lined up step for step
+ * when a conversation was run once.
  */
 import { readFile } from 'node:fs/promises'
 import { join } from 'node:path'
@@ -24,8 +28,18 @@ export interface TranscriptToolCall {
 
 /** One step of a conversation, as agy recorded it. */
 export interface TranscriptRow {
-  /** The step number — the same number the SQLite database uses. */
+  /** The step number inside its own run — agy restarts it on every run. */
   index: number
+  /**
+   * The position of the row in the transcript.
+   *
+   * agy restarts `step_index` at zero on every run, so the same number can
+   * appear twice in one conversation. The position in the file does not
+   * repeat, and that is what the panel numbers its steps by.
+   */
+  seq: number
+  /** Which run of the conversation the row belongs to, counted from zero. */
+  round: number
   source: string
   type: string
   status: string
@@ -104,6 +118,8 @@ function parseToolCalls(value: unknown): TranscriptToolCall[] {
  */
 export function parseTranscript(text: string): TranscriptRow[] {
   const rows: TranscriptRow[] = []
+  let previousIndex: number | null = null
+  let round = 0
   for (const line of text.split('\n')) {
     const trimmed = line.trim()
     if (trimmed.length === 0) continue
@@ -117,8 +133,14 @@ export function parseTranscript(text: string): TranscriptRow[] {
     if (row === null) continue
     const index = asNumber(row.step_index)
     if (index === null) continue
+    // A step number that goes back down means agy started another run of the
+    // same conversation; the file keeps both, the numbers restart at zero.
+    if (previousIndex !== null && index < previousIndex) round += 1
+    previousIndex = index
     rows.push({
       index,
+      seq: rows.length,
+      round,
       source: typeof row.source === 'string' ? row.source : 'UNKNOWN',
       type: typeof row.type === 'string' ? row.type : 'UNKNOWN',
       status: typeof row.status === 'string' ? row.status : 'DONE',
@@ -199,9 +221,9 @@ function timestampOf(row: TranscriptRow): number | undefined {
 /**
  * The steps of a conversation, as the transcript describes them.
  *
- * One transcript row is one step — the same step the database knows. The
- * mapping is deliberately one to one, so the two sources can be merged by
- * index:
+ * One transcript row is one step, numbered by its position in the file — agy
+ * restarts its own `step_index` on every run, so that number would repeat.
+ * The mapping between agy's types and the panel's is deliberately one to one:
  *
  * - `PLANNER_RESPONSE` is the model; its `content` is the reply, `thinking`
  *   is the reasoning. The reply wins when both are there.
@@ -227,7 +249,8 @@ export function transcriptToSteps(rows: readonly TranscriptRow[]): StepEvent[] {
         ? null
         : { name: orphan.name, parameters: orphan.parameters, error: null }
       steps.push({
-        index: row.index,
+        index: row.seq,
+        round: row.round,
         state: row.status,
         type,
         text: row.content ?? row.thinking ?? '',
@@ -248,7 +271,8 @@ export function transcriptToSteps(rows: readonly TranscriptRow[]): StepEvent[] {
         ? null
         : { name: call.name, parameters: call.parameters, error: null }
       steps.push({
-        index: row.index,
+        index: row.seq,
+        round: row.round,
         state: row.status,
         type,
         text: row.content ?? '',
@@ -262,7 +286,8 @@ export function transcriptToSteps(rows: readonly TranscriptRow[]): StepEvent[] {
     }
 
     steps.push({
-      index: row.index,
+      index: row.seq,
+      round: row.round,
       state: row.status,
       type,
       text: row.content ?? '',

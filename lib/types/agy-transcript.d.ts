@@ -6,8 +6,18 @@ export interface TranscriptToolCall {
 }
 /** One step of a conversation, as agy recorded it. */
 export interface TranscriptRow {
-    /** The step number — the same number the SQLite database uses. */
+    /** The step number inside its own run — agy restarts it on every run. */
     index: number;
+    /**
+     * The position of the row in the transcript.
+     *
+     * agy restarts `step_index` at zero on every run, so the same number can
+     * appear twice in one conversation. The position in the file does not
+     * repeat, and that is what the panel numbers its steps by.
+     */
+    seq: number;
+    /** Which run of the conversation the row belongs to, counted from zero. */
+    round: number;
     source: string;
     type: string;
     status: string;
@@ -43,9 +53,9 @@ export declare function readTranscript(conversationId: string, brainDir: string)
 /**
  * The steps of a conversation, as the transcript describes them.
  *
- * One transcript row is one step — the same step the database knows. The
- * mapping is deliberately one to one, so the two sources can be merged by
- * index:
+ * One transcript row is one step, numbered by its position in the file — agy
+ * restarts its own `step_index` on every run, so that number would repeat.
+ * The mapping between agy's types and the panel's is deliberately one to one:
  *
  * - `PLANNER_RESPONSE` is the model; its `content` is the reply, `thinking`
  *   is the reasoning. The reply wins when both are there.
