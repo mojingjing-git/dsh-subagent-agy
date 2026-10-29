@@ -138,6 +138,10 @@ configured model** (hover for the reset time). Clicking it opens the
   conversation without one shows its steps without times or tokens rather than
   fake zeros. Cached reads are billed at a discount, so they are **not counted as
   input**; the totals list them separately.
+  A conversation agy ran more than once keeps every run in the transcript and
+  restarts its step numbers for each of them, so the panel numbers the steps
+  by their position in the file and draws a **divider where a new run starts** —
+  the third step of two different runs never becomes one step.
 
 The panel reads the local registry, so past conversations remain resumable after
 a DSH restart; when agy is missing or logged out the quota area shows an empty

@@ -12,7 +12,7 @@ end-to-end suite (`test/e2e-real.mjs`, 13 assertions against the installed `agy`
 
 The package name (`@dsh-external/dsh-subagent-antigravity`) and the Cordis mount
 id (`dsh-subagent-antigravity`) never change, so this build drops in where the
-upstream release was. Version: `0.2.0-patched.14`.
+upstream release was. Version: `0.2.0-patched.15`.
 
 ## v14 — tokens and timestamps, read from agy's own transcript
 
@@ -43,6 +43,17 @@ it borrows that call; the thinking of a reply stays next to the reply.
 
 Where agy wrote no transcript, the panel shows the steps without times or
 tokens. It does not invent zeros.
+
+One more thing about the numbering, found by reading a real conversation: agy
+restarts `step_index` at zero on every run of the same conversation and keeps
+both runs in one transcript file, while the SQLite database numbers the steps
+of the whole conversation continuously. Numbering the transcript by agy's own
+counter therefore showed the same step twice, and lining the two sources up
+by that counter put a reply next to the wrong step. The transcript is now
+numbered by its position in the file, the panel marks where a new run starts,
+and the two sources are only merged step for step when they describe the same
+number of steps — a conversation that was run twice is shown from the
+transcript alone.
 
 The quota cards also say **when** they were read now: the probe takes about ten
 seconds, and a number that is ten minutes old should look ten minutes old.
