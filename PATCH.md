@@ -29,9 +29,20 @@ the model reaches for it, and honest enough that its result can be trusted.
   something stays `completed`, with the denial disclosed in the body.
 - **B — the description is a prompt, not a manual.** `antigravity`'s
   description dropped from ~2000 characters of failure modes and mount ids to
-  ~640 characters of "when to delegate, what to send, what you get back"; the
-  environment notes are appended internally at registration time.
+  ~640 characters of "when to delegate, what to send, what you get back";
   `antigravity_followup` dropped to one line.
+
+  Nothing was thrown away, it moved to where it is needed:
+
+  | old description block | where it lives now |
+  |---|---|
+  | `dirs` / "a target outside the workspace hangs until timeout" | the `dirs` parameter description (read exactly when composing the call) |
+  | browser tools and >1 MB reads | still appended to **every prompt** sent to agy (`AVOID_BROWSER_SUFFIX` / `AVOID_LARGE_READ_SUFFIX`, `avoidBrowser` / `avoidLargeReads`) — rules for the child, not context for the parent |
+  | "authentication required" → login window | behaviour: `maybeAutoLogin()` opens it; README troubleshooting row |
+  | print/timeout ceilings | config + the error text itself ("did not finish within …ms"); the `background` parameter keeps the long form |
+  | background wake-up / do not poll | one clause in the description, the full form in the `background` parameter |
+  | mount id, plugin id, tool inventory, the model's nicknames for the plugin | **deleted** — the model already sees the tool catalog and the name |
+
 - **C — `antigravity` is the entry point for both modes.**
   `antigravity({ prompt })` starts a task, `antigravity({ task, prompt })`
   resumes it, and `background: true` works either way (resume used to lack it).
