@@ -346,6 +346,105 @@ window.__ModuleLoader__.load({
     }
 
     // ── history timeline ──────────────────────────────────────────────────────
+    const MONO = 'ui-monospace, SFMono-Regular, Consolas, monospace'
+
+    /**
+     * Split one run of text into React nodes, handling only the two inline
+     * forms agy actually emits: `code` and **bold**.
+     *
+     * Deliberately tiny. This file is loaded as a classic script with no build
+     * step and no unit tests of its own, so a full markdown parser would be a
+     * white-screen risk for no benefit. Nothing here ever builds an HTML
+     * string — every value stays a React child, so agy's output cannot inject.
+     */
+    const inlineNodes = (text, keyPrefix) => {
+      const nodes = []
+      let rest = text
+      let n = 0
+      while (rest.length > 0) {
+        const bold = /\*\*([^*]+)\*\*/.exec(rest)
+        const code = /`([^`\n]+)`/.exec(rest)
+        const hits = [bold, code].filter((hit) => hit !== null)
+        if (hits.length === 0) {
+          nodes.push(rest)
+          break
+        }
+        hits.sort((a, b) => a.index - b.index)
+        const next = hits[0]
+        if (next.index > 0) nodes.push(rest.slice(0, next.index))
+        nodes.push(
+          next === bold
+            ? h('strong', { key: `${keyPrefix}-b${n}` }, next[1])
+            : h('code', {
+              key: `${keyPrefix}-c${n}`,
+              style: { fontFamily: MONO, background: C.field, borderRadius: 3, padding: '0 3px', fontSize: '0.95em' },
+            }, next[1]),
+        )
+        n += 1
+        rest = rest.slice(next.index + next[0].length)
+      }
+      return nodes
+    }
+
+    /**
+     * Render prose with fenced code blocks. Everything else keeps its natural
+     * newlines via `pre-wrap`, which is what already worked — only the code
+     * fences and the two inline forms get special treatment.
+     */
+    const markdownNodes = (text, keyPrefix) => {
+      const out = []
+      const lines = String(text).split('\n')
+      let para = []
+      const flush = () => {
+        if (para.length === 0) return
+        const index = out.length
+        out.push(
+          h('div', {
+            key: `${keyPrefix}-p${index}`,
+            style: { whiteSpace: 'pre-wrap', wordBreak: 'break-word' },
+          }, inlineNodes(para.join('\n'), `${keyPrefix}-p${index}`)),
+        )
+        para = []
+      }
+      let i = 0
+      while (i < lines.length) {
+        const fence = /^\s*```(.*)$/.exec(lines[i])
+        if (fence !== null) {
+          flush()
+          i += 1
+          const body = []
+          while (i < lines.length && !/^\s*```\s*$/.test(lines[i])) {
+            body.push(lines[i])
+            i += 1
+          }
+          i += 1 // closing fence (or past the end of an unclosed block)
+          out.push(
+            h('pre', {
+              key: `${keyPrefix}-code${out.length}`,
+              style: {
+                margin: '4px 0',
+                padding: '6px 8px',
+                background: C.field,
+                border: `1px solid ${C.border}`,
+                borderRadius: 6,
+                fontFamily: MONO,
+                fontSize: 10.5,
+                lineHeight: 1.45,
+                whiteSpace: 'pre-wrap',
+                wordBreak: 'break-word',
+                overflowX: 'auto',
+              },
+            }, body.join('\n')),
+          )
+          continue
+        }
+        para.push(lines[i])
+        i += 1
+      }
+      flush()
+      return out
+    }
+
     const STEP_LABEL = {
       user_input: '你',
       agent_response: '模型',
@@ -408,6 +507,15 @@ window.__ModuleLoader__.load({
       return String(value)
     }
 
+    /** 65000 → "1m 5s" */
+    const formatDuration = (ms) => {
+      if (typeof ms !== 'number' || !Number.isFinite(ms) || ms < 0) return ''
+      const total = Math.round(ms / 1000)
+      const minutes = Math.floor(total / 60)
+      const seconds = total % 60
+      return minutes > 0 ? `${minutes}m ${seconds}s` : `${seconds}s`
+    }
+
     /** The wall clock of a step, as agy recorded it. */
     const clockOf = (at) => {
       if (typeof at !== 'number' || !Number.isFinite(at)) return null
@@ -417,13 +525,27 @@ window.__ModuleLoader__.load({
     }
 
     /** One step of the timeline. */
-    function StepRow({ step }) {
+    function StepRow({ step, primary }) {
       const label = STEP_LABEL[step.type] || step.type || '步骤'
       // agy does not keep the body of every reply; where it only kept the
       // model name, that name is not the answer.
       const body =
         step.type === 'agent_response' && looksLikeModelName(step.text) ? '' : step.text
       const hasText = typeof body === 'string' && body.trim().length > 0
+      // A long interim thought collapses to one line; only the final response
+      // stays expanded. Without this the reasoning text alone (measured p50
+      // ≈ 440 chars, max ≈ 4k) dominates the panel the way tool arguments did.
+      if (hasText && primary !== true && step.type === 'agent_response' && body.trim().length > 300) {
+        const firstLine = body.trim().split('\n').map((line) => line.trim()).find((line) => line.length > 0) ?? ''
+        return h(
+          Disclosure,
+          {
+            summary: h('span', { style: { fontSize: 10, color: C.dim } },
+              `${label} · ${body.trim().length} 字 · ${firstLine.slice(0, 60)}${firstLine.length > 60 ? '…' : ''}`),
+          },
+          h('div', { style: { fontSize: 11, lineHeight: 1.55, color: C.text } }, markdownNodes(body, `s${step.index}`)),
+        )
+      }
       const clock = clockOf(step.at)
       const usage = step.usage && typeof step.usage === 'object' ? step.usage : null
       const tokenText = usage
@@ -457,13 +579,13 @@ window.__ModuleLoader__.load({
                 style: {
                   marginTop: 2,
                   fontSize: 11,
-                  lineHeight: 1.5,
+                  lineHeight: 1.55,
                   color: C.text,
-                  whiteSpace: 'pre-wrap',
-                  wordBreak: 'break-word',
                 },
               },
-              body,
+              // The answer is prose: render its code fences and inline forms
+              // instead of dumping raw markdown at the reader.
+              markdownNodes(body, `s${step.index}`),
             )
           : step.type === 'agent_response'
             ? h(
@@ -501,13 +623,181 @@ window.__ModuleLoader__.load({
     }
 
     /**
+     * One collapsible block, built on native <details> so there is no state to
+     * get wrong and no re-render can swallow a user's expand.
+     *
+     * `forceOpen` is passed only while a tool is running or has failed: React
+     * then pins the block open, and once the step settles the prop is dropped
+     * so the user gets control back. Passing `open: false` here would instead
+     * collapse the block again on every poll.
+     */
+    function Disclosure({ summary, children, forceOpen }) {
+      return h(
+        'details',
+        forceOpen === true ? { open: true } : {},
+        h('summary', {
+          style: { cursor: 'pointer', fontSize: 10, padding: '2px 0', userSelect: 'none' },
+        }, summary),
+        h('div', { style: { marginLeft: 10, marginTop: 2 } }, children),
+      )
+    }
+
+    /**
+     * Collapse a run's steps into renderable blocks.
+     *
+     * agy's real stream alternates tool → agent_response → tool, and most of
+     * those responses carry no text at all. Grouping only *consecutive* tools
+     * therefore merged nothing — measured on real sessions: 125 steps rendered
+     * as 125 blocks. So the rules are:
+     *   - a tool joins the open tool group, crossing empty responses;
+     *   - a response with no text is dropped (it has nothing to show);
+     *   - a response with text closes the group and stands alone;
+     *   - the last response is marked `primary` so it is never collapsed.
+     */
+    /**
+     * Fold the grouped timeline into three sections: the opening request, one
+     * collapsed "执行过程" run covering every tool call and every interim
+     * thought, and the final answer.
+     *
+     * Measured on real sessions, `groupSteps` alone still left a pattern like
+     * `S S T S T S T…`: an interim thought (median ≈ 400 chars) sat between
+     * every pair of tool groups, so a run with 46 tool calls still occupied
+     * ~40 rows. Those interim thoughts are the model narrating itself — the
+     * user asked for exactly that to stop taking up space — so they move inside
+     * the same collapsible block as the tools. Nothing is hidden: expanding the
+     * block shows the original timeline, tools still collapsed one line each.
+     */
+    function sectionize(groups) {
+      let finalIndex = -1
+      for (let i = groups.length - 1; i >= 0; i -= 1) {
+        const group = groups[i]
+        if (group.kind === 'step' && group.step.type === 'agent_response') {
+          finalIndex = i
+          break
+        }
+      }
+      if (finalIndex < 0) return groups.map((group) => ({ kind: 'block', group }))
+      // A leading user_input / system_message is context, not process: it stays
+      // visible above the fold.
+      const head = []
+      let i = 0
+      while (i < finalIndex && groups[i].kind === 'step' && groups[i].step.type !== 'agent_response') {
+        head.push({ kind: 'block', group: groups[i] })
+        i += 1
+      }
+      const middle = groups.slice(i, finalIndex)
+      const out = head
+      if (middle.length > 0) out.push({ kind: 'process', groups: middle })
+      out.push({ kind: 'block', group: groups[finalIndex] })
+      return out
+    }
+
+    /** The one-line summary of a collapsed process section. */
+    function processSummary(groups) {
+      let tools = 0
+      let thoughts = 0
+      for (const group of groups) {
+        if (group.kind === 'tools') tools += group.steps.length
+        else if (group.kind === 'step') thoughts += 1
+      }
+      const parts = []
+      if (tools > 0) parts.push(`${tools} 次工具调用`)
+      if (thoughts > 0) parts.push(`${thoughts} 段过程思考`)
+      return parts.length > 0 ? parts.join(' · ') : `${groups.length} 个步骤`
+    }
+
+    function groupSteps(steps) {
+      const groups = []
+      let open = null
+      const flush = () => {
+        if (open !== null && open.steps.length > 0) groups.push(open)
+        open = null
+      }
+      for (const step of steps) {
+        if (step.type === 'tool') {
+          if (open === null || open.round !== step.round) {
+            flush()
+            open = { kind: 'tools', round: step.round, steps: [] }
+          }
+          open.steps.push(step)
+          continue
+        }
+        if (step.type === 'agent_response' && String(step.text || '').trim().length === 0) continue
+        flush()
+        groups.push({ kind: 'step', step })
+      }
+      flush()
+      if (groups.length > 0) {
+        const last = groups[groups.length - 1]
+        if (last.kind === 'step' && last.step.type === 'agent_response') last.primary = true
+      }
+      return groups
+    }
+
+    /** One tool call, collapsed to a single line unless it is running or failed. */
+    function ToolRow({ step }) {
+      const tool = step.tool
+      const name = (tool && tool.name) || '工具'
+      const path = tool && typeof tool.targetPath === 'string' ? tool.targetPath : ''
+      const failed = step.state === 'ERROR'
+      const active = step.state === 'ACTIVE'
+      const label = `${failed ? '✕ ' : active ? '▸ ' : ''}${name}${path.length > 0 ? ` · ${path}` : ''}`
+      return h(
+        Disclosure,
+        {
+          forceOpen: failed,
+          summary: h('span', {
+            style: { fontFamily: MONO, color: failed ? C.danger : active ? C.success : C.dim },
+          }, label),
+        },
+        h(ToolDetail, { tool }),
+      )
+    }
+
+    /** A run of consecutive tool calls, folded into one summary line. */
+    function ToolGroup({ steps }) {
+      const active = steps.some((step) => step.state === 'ACTIVE')
+      const failed = steps.some((step) => step.state === 'ERROR')
+      const names = steps.map((step) => (step.tool && step.tool.name) || '工具')
+      const unique = names.filter((name, index) => names.indexOf(name) === index)
+      const head = unique.slice(0, 3).join(' · ') + (unique.length > 3 ? ' …' : '')
+      const summary = active ? `执行中 · ${head}` : `${steps.length} 次工具调用 · ${head}`
+      return h(
+        Disclosure,
+        {
+          // A running group must stay visible: collapsing it would hide exactly
+          // what the user opened the panel to watch.
+          forceOpen: active || failed,
+          summary: h('span', {
+            style: { color: failed ? C.danger : active ? C.success : C.dim, fontWeight: 500 },
+          }, summary),
+        },
+        steps.map((step) => h(ToolRow, { key: step.index, step })),
+      )
+    }
+
+    /**
      * The step timeline of the selected conversation.
      *
-     * It answers the question the panel used to leave open: what did the model
-     * actually do — which prompt it got, which tools it called, what it replied.
+     * What the model actually did — which prompt it got, which tools it
+     * called, what it replied.
      */
     function HistoryTimeline({ history, loading, error, onRefresh }) {
       const steps = history && Array.isArray(history.steps) ? history.steps : []
+      // Consecutive tool calls collapse into one block, so a long run reads as
+      // thought → tools → answer instead of one row per call.
+      const groups = groupSteps(steps)
+      // …and everything between the request and the answer collapses again into
+      // a single 执行过程 section, which is what keeps a 46-tool-call run from
+      // occupying 40 rows.
+      const sections = sectionize(groups)
+      const roundOfGroup = (group) => (group.kind === 'tools' ? group.round : group.step.round)
+      const sectionRound = (section) => (section.kind === 'process'
+        ? (section.groups.length > 0 ? roundOfGroup(section.groups[0]) : undefined)
+        : roundOfGroup(section.group))
+      const renderGroup = (group, key) => (group.kind === 'tools'
+        ? h(ToolGroup, { key, steps: group.steps })
+        : h(StepRow, { key, step: group.step, primary: group.primary }))
       const hidden = history && typeof history.stepCount === 'number' ? history.stepCount - steps.length : 0
       return h(
         'div',
@@ -560,16 +850,30 @@ window.__ModuleLoader__.load({
                 : '这个会话没有记录步骤。',
             )
           : null,
-        steps.map((step, position) => {
+        sections.map((section, position) => {
+          if (section.kind === 'process') {
+            return h(
+              'div',
+              { key: `process-${position}`, style: { margin: '6px 0' } },
+              h(
+                Disclosure,
+                {
+                  summary: h('span', { style: { fontSize: 10, color: C.dim, fontWeight: 500 } },
+                    `执行过程 · ${processSummary(section.groups)}`),
+                },
+                section.groups.map((group, index) => renderGroup(group, `pi-${position}-${index}`)),
+              ),
+            )
+          }
           // agy keeps every run of a conversation in one transcript and
           // restarts its step numbers, so a new run shows up as a new round.
-          const previous = position === 0 ? null : steps[position - 1]
-          const newRound =
-            typeof step.round === 'number' &&
-            (previous === null || previous.round !== step.round)
+          const group = section.group
+          const round = roundOfGroup(group)
+          const previous = position === 0 ? null : sectionRound(sections[position - 1])
+          const newRound = typeof round === 'number' && (previous === null || previous !== round)
           return h(
             React.Fragment,
-            { key: step.index },
+            { key: group.kind === 'tools' ? `g-${group.steps[0].index}` : `s-${group.step.index}` },
             newRound
               ? h(
                   'div',
@@ -584,72 +888,101 @@ window.__ModuleLoader__.load({
                     },
                   },
                   h('span', { style: { flex: 1, height: '1px', background: C.border } }),
-                  h('span', null, `第 ${step.round + 1} 轮`),
+                  h('span', null, `第 ${round + 1} 轮`),
                   h('span', { style: { flex: 1, height: '1px', background: C.border } }),
                 )
               : null,
-            h(StepRow, { step }),
+            renderGroup(group),
           )
         }),
       )
     }
 
-    function ConversationRow({ item, selected, running, onSelect }) {
+    function ConversationRow({ item, selected, running, onSelect, onToggleHidden }) {
+      const hidden = item.hidden === true
       return h(
-        'button',
+        'div',
         {
-          type: 'button',
-          onClick: () => onSelect(item.conversationId),
           style: {
-            display: 'block',
-            width: '100%',
-            textAlign: 'left',
-            border: 'none',
+            display: 'flex',
+            alignItems: 'stretch',
             borderLeft: `2px solid ${selected ? C.accent : 'transparent'}`,
             background: selected ? C.hover : 'transparent',
-            padding: '7px 10px',
-            cursor: 'pointer',
+            opacity: hidden ? 0.55 : 1,
             color: C.text,
           },
         },
         h(
           'div',
-          { style: { display: 'flex', alignItems: 'center', gap: 6 } },
-          running ? h('span', { style: { color: C.success, fontSize: 9 } }, '●') : null,
-          h('span', {
-            style: { fontSize: 12, fontWeight: 500, flex: 1, overflow: 'hidden', textOverflow: 'ellipsis', whiteSpace: 'nowrap' },
-            title: item.preview || item.label || '',
-          }, item.label || item.conversationId.slice(0, 8)),
-          h('span', { style: { fontSize: 10, color: C.dimmer, flex: 'none' } }, shortTime(item.lastActivityAt || item.createdAt)),
+          {
+            // A div with a role, not a <button>: the row carries its own hide
+            // button, and a button may not nest inside another one.
+            role: 'button',
+            tabIndex: 0,
+            onClick: () => onSelect(item.conversationId),
+            onKeyDown: (event) => {
+              if (event.key === 'Enter' || event.key === ' ') onSelect(item.conversationId)
+            },
+            style: { flex: 1, minWidth: 0, padding: '7px 4px 7px 10px', cursor: 'pointer', textAlign: 'left' },
+          },
+          h(
+            'div',
+            { style: { display: 'flex', alignItems: 'center', gap: 6 } },
+            running ? h('span', { style: { color: C.success, fontSize: 9 } }, '●') : null,
+            h('span', {
+              style: { fontSize: 12, fontWeight: 500, flex: 1, overflow: 'hidden', textOverflow: 'ellipsis', whiteSpace: 'nowrap' },
+              title: item.preview || item.label || '',
+            }, item.label || item.conversationId.slice(0, 8)),
+            h('span', { style: { fontSize: 10, color: C.dimmer, flex: 'none' } }, shortTime(item.lastActivityAt || item.createdAt)),
+          ),
+          h(
+            'div',
+            { style: { display: 'flex', alignItems: 'center', gap: 6, marginTop: 3 } },
+            h('span', {
+              style: { fontSize: 10, color: C.dim, overflow: 'hidden', textOverflow: 'ellipsis', whiteSpace: 'nowrap', flex: 1 },
+              title: item.cwd,
+            }, item.cwdExists ? shortCwd(item.cwd) : `${shortCwd(item.cwd)}（目录不存在）`),
+            item.stepCount > 0
+              ? h('span', { style: { fontSize: 9, color: C.dimmer, flex: 'none' } }, `${item.stepCount} 步`)
+              : null,
+            item.model
+              ? h('span', {
+                style: {
+                  fontSize: 9,
+                  color: C.dim,
+                  border: `1px solid ${C.border}`,
+                  borderRadius: 4,
+                  padding: '0 4px',
+                  flex: 'none',
+                },
+              }, item.model)
+              : null,
+          ),
         ),
-        h(
-          'div',
-          { style: { display: 'flex', alignItems: 'center', gap: 6, marginTop: 3 } },
-          h('span', {
-            style: { fontSize: 10, color: C.dim, overflow: 'hidden', textOverflow: 'ellipsis', whiteSpace: 'nowrap', flex: 1 },
-            title: item.cwd,
-          }, item.cwdExists ? shortCwd(item.cwd) : `${shortCwd(item.cwd)}（目录不存在）`),
-          item.stepCount > 0
-            ? h('span', { style: { fontSize: 9, color: C.dimmer, flex: 'none' } }, `${item.stepCount} 步`)
-            : null,
-          item.model
-            ? h('span', {
-              style: {
-                fontSize: 9,
-                color: C.dim,
-                border: `1px solid ${C.border}`,
-                borderRadius: 4,
-                padding: '0 4px',
-                flex: 'none',
-              },
-            }, item.model)
-            : null,
-        ),
+        h('button', {
+          type: 'button',
+          title: hidden ? '恢复显示这个会话' : '隐藏这个会话',
+          onClick: (event) => {
+            event.stopPropagation()
+            onToggleHidden(item.conversationId, !hidden)
+          },
+          style: {
+            flex: 'none',
+            background: 'transparent',
+            border: 'none',
+            color: C.dimmer,
+            cursor: 'pointer',
+            fontSize: 11,
+            padding: '0 8px',
+          },
+        }, hidden ? '↺' : '⊘'),
       )
     }
 
     function AgyPanel() {
       const [items, setItems] = useState([])
+      const [hiddenCount, setHiddenCount] = useState(0)
+      const [includeHidden, setIncludeHidden] = useState(false)
       const [listError, setListError] = useState(null)
       const [usage, setUsage] = useState(null)
       const [tokens, setTokens] = useState(null)
@@ -666,10 +999,21 @@ window.__ModuleLoader__.load({
       const outputRef = useRef(null)
 
       const loadConversations = useCallback(() => {
-        post('/conversations', {})
-          .then((payload) => { setItems(payload.items || []); setListError(null) })
+        post('/conversations', includeHidden ? { includeHidden: true } : {})
+          .then((payload) => {
+            setItems(payload.items || [])
+            setHiddenCount(typeof payload.hiddenCount === 'number' ? payload.hiddenCount : 0)
+            setListError(null)
+          })
           .catch((error) => setListError(error.message))
-      }, [])
+      }, [includeHidden])
+
+      /** Hide or restore one conversation, then reload so the count stays right. */
+      const toggleHidden = useCallback((conversationId, hide) => {
+        post('/prefs', hide ? { hide: conversationId } : { show: conversationId })
+          .then(() => loadConversations())
+          .catch((error) => setListError(error.message))
+      }, [loadConversations])
 
       /** Read the step timeline of one conversation back from agy's database. */
       const loadHistory = useCallback((conversationId) => {
@@ -749,6 +1093,12 @@ window.__ModuleLoader__.load({
                   status: payload.status,
                   tool: payload.tool,
                   error: payload.error,
+                  // The live timeline is the same StepEvent[] shape /history
+                  // returns, so it renders through the same components. It is
+                  // replaced wholesale (never delta-merged): a step arrives again
+                  // when it advances from ACTIVE to DONE.
+                  steps: Array.isArray(payload.steps) ? payload.steps : prev.steps,
+                  elapsedMs: typeof payload.elapsedMs === 'number' ? payload.elapsedMs : prev.elapsedMs,
                 }
                 : prev))
             })
@@ -787,7 +1137,7 @@ window.__ModuleLoader__.load({
         cursorRef.current = 0
         post('/continue', { conversationId: selected, prompt: text })
           .then((payload) => {
-            setRun({ id: payload.runId, text: '', status: 'running', tool: null, error: undefined })
+            setRun({ id: payload.runId, text: '', status: 'running', tool: null, error: undefined, steps: [], elapsedMs: 0 })
             setPrompt('')
             loadConversations()
           })
@@ -800,10 +1150,13 @@ window.__ModuleLoader__.load({
         setRun((prev) => (prev === null ? prev : { ...prev, status: 'cancelled' }))
       }, [run])
 
+      const elapsedText = run !== null && typeof run.elapsedMs === 'number' && run.elapsedMs > 0
+        ? ` · 已运行 ${formatDuration(run.elapsedMs)}`
+        : ''
       const statusText = run === null
         ? ''
         : run.status === 'running'
-          ? (run.tool ? `正在调用 ${run.tool}` : '运行中…')
+          ? (run.tool ? `正在调用 ${run.tool}` : '运行中…') + elapsedText
           : run.status === 'done'
             ? '完成'
             : run.status === 'cancelled'
@@ -842,6 +1195,26 @@ window.__ModuleLoader__.load({
                 borderTop: selected === null ? 'none' : `1px solid ${C.border}`,
               },
             },
+            h(
+              'div',
+              { style: { display: 'flex', alignItems: 'center', gap: 6, padding: '0 10px 6px' } },
+              h('span', { style: { fontSize: 9, color: C.dimmer, flex: 1 } }, `${items.length} 个会话`),
+              includeHidden || hiddenCount > 0
+                ? h('button', {
+                  type: 'button',
+                  onClick: () => setIncludeHidden((value) => !value),
+                  style: {
+                    border: `1px solid ${C.border}`,
+                    background: 'transparent',
+                    color: C.dim,
+                    borderRadius: 6,
+                    fontSize: 9,
+                    padding: '1px 6px',
+                    cursor: 'pointer',
+                  },
+                }, includeHidden ? '收起已隐藏' : `显示已隐藏（${hiddenCount}）`)
+                : null,
+            ),
             listError !== null
               ? h('div', { style: { padding: 12, fontSize: 11, color: C.danger } }, `会话列表读取失败：${listError}`)
               : items.length === 0
@@ -857,6 +1230,7 @@ window.__ModuleLoader__.load({
                     setSendError(null)
                     loadHistory(id)
                   },
+                  onToggleHidden: toggleHidden,
                 })),
           ),
         ),
@@ -890,27 +1264,84 @@ window.__ModuleLoader__.load({
               : null,
           ),
 
-          run !== null
-            ? h('pre', {
-              ref: outputRef,
-              style: {
-                margin: 0,
-                flex: 1,
-                minHeight: 60,
-                maxHeight: 220,
-                overflowY: 'auto',
-                background: C.field,
-                border: `1px solid ${C.border}`,
-                borderRadius: 8,
-                padding: '6px 8px',
-                fontSize: 11,
-                lineHeight: 1.45,
-                whiteSpace: 'pre-wrap',
-                wordBreak: 'break-word',
-                color: C.text,
-                fontFamily: 'ui-monospace, SFMono-Regular, Consolas, monospace',
+          run !== null && Array.isArray(run.steps) && run.steps.length > 0
+            ? h(
+              'div',
+              {
+                style: {
+                  flex: 1,
+                  minHeight: 60,
+                  maxHeight: 220,
+                  overflowY: 'auto',
+                  background: C.field,
+                  border: `1px solid ${C.border}`,
+                  borderRadius: 8,
+                  padding: '6px 8px',
+                },
               },
-            }, run.text.length > 0 ? run.text : (busy ? '等待 agy 输出…' : '（无输出）'))
+              // Live view: only the tail. The whole run is collapsed into one
+              // section in the history view, but while it runs you want to see
+              // what it is doing *now*, so keep the last few blocks visible.
+              (() => {
+                const all = groupSteps(run.steps)
+                const recent = all.slice(-6)
+                const skipped = all.length - recent.length
+                return [
+                  skipped > 0
+                    ? h('div', { key: 'older', style: { fontSize: 9, color: C.dimmer, marginBottom: 4 } },
+                      `更早的 ${skipped} 段已折叠，完成后可在历史里展开查看`)
+                    : null,
+                  ...recent.map((group, position) => (group.kind === 'tools'
+                    ? h(ToolGroup, { key: `rg-${position}`, steps: group.steps })
+                    : h(StepRow, { key: `rs-${position}`, step: group.step, primary: group.primary }))),
+                ]
+              })(),
+            )
+            : null,
+
+          run !== null
+            ? (Array.isArray(run.steps) && run.steps.length > 0
+              // The timeline is the primary view; the raw stream stays one click
+              // away because it carries whatever the step parser dropped
+              // (stderr notes, protocol lines, crash diagnostics).
+              ? h(
+                Disclosure,
+                { summary: `原始输出 · ${run.text.length} 字符` },
+                h('pre', {
+                  ref: outputRef,
+                  style: {
+                    margin: 0,
+                    maxHeight: 200,
+                    overflowY: 'auto',
+                    whiteSpace: 'pre-wrap',
+                    wordBreak: 'break-word',
+                    fontSize: 10.5,
+                    lineHeight: 1.45,
+                    color: C.dim,
+                    fontFamily: MONO,
+                  },
+                }, run.text.length > 0 ? run.text : (busy ? '等待 agy 输出…' : '（无输出）')),
+              )
+              : h('pre', {
+                ref: outputRef,
+                style: {
+                  margin: 0,
+                  flex: 1,
+                  minHeight: 60,
+                  maxHeight: 220,
+                  overflowY: 'auto',
+                  background: C.field,
+                  border: `1px solid ${C.border}`,
+                  borderRadius: 8,
+                  padding: '6px 8px',
+                  fontSize: 11,
+                  lineHeight: 1.45,
+                  whiteSpace: 'pre-wrap',
+                  wordBreak: 'break-word',
+                  color: C.text,
+                  fontFamily: MONO,
+                },
+              }, run.text.length > 0 ? run.text : (busy ? '等待 agy 输出…' : '（无输出）')))
             : null,
 
           sendError !== null ? h('div', { style: { fontSize: 10, color: C.danger } }, sendError) : null,
@@ -976,7 +1407,7 @@ window.__ModuleLoader__.load({
         title: () => 'Antigravity Manager',
         // No guide entry on purpose: a guide capsule changes the right bar's
         // default-page rule, and this panel is meant to be opened from its
-        // footer button only (PLAN-sidebar-panel.md decision 5).
+        // footer button only.
       }), 'dsh-subagent-antigravity: sidebar tab type')
 
       ctx.slots.inject('sidebar.right.pane.tab', () => ctx.slots.register(
