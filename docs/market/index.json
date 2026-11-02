@@ -1,0 +1,55 @@
+{
+  "format": 1,
+  "title": {
+    "en": "DSH plugins by mojingjing-git",
+    "zh": "mojingjing-git 的 DSH 插件"
+  },
+  "description": {
+    "en": "Plugins maintained together with the DSH Antigravity subagent.",
+    "zh": "与 DSH Antigravity 子代理一同维护的插件。"
+  },
+  "metadata": {
+    "categories": {
+      "subagent": { "title": { "en": "Subagents", "zh": "子代理" } },
+      "integration": { "title": { "en": "Integrations", "zh": "集成" } }
+    },
+    "labels": {
+      "panel": { "title": { "en": "Sidebar panel", "zh": "侧边栏面板" } },
+      "no-api-key": { "title": { "en": "No API key", "zh": "免 API Key" } }
+    },
+    "sortKeys": {
+      "stars": { "title": { "en": "Stars", "zh": "星标" }, "order": "desc" }
+    }
+  },
+  "plugins": [
+    {
+      "name": "@mojingjing-git/dsh-subagent-antigravity",
+      "title": { "en": "Antigravity Subagent", "zh": "Antigravity 子代理" },
+      "description": {
+        "en": "Delegate tasks to Google Antigravity CLI (agy) as a DSH subagent without a Gemini API key. Ships a sidebar panel with quotas, a conversation list and a collapsible step timeline.",
+        "zh": "把任务委派给 Google Antigravity CLI（agy），不需要 Gemini API Key。自带侧边栏面板：额度、会话列表和可折叠的步骤时间线。"
+      },
+      "author": "mojingjing-git",
+      "homepage": "https://github.com/mojingjing-git/dsh-subagent-agy#readme",
+      "repository": { "url": "https://github.com/mojingjing-git/dsh-subagent-agy" },
+      "metadata": {
+        "category": "subagent",
+        "keywords": ["dsh", "dsh-plugin", "antigravity", "agy", "gemini", "subagent"],
+        "labels": ["panel", "no-api-key"],
+        "sortKeys": { "stars": 0 }
+      },
+      "versions": [
+        {
+          "version": "0.3.0",
+          "publishTimestamp": 1793581453,
+          "source": {
+            "type": "git",
+            "url": "https://github.com/mojingjing-git/dsh-subagent-agy",
+            "commit": "8abc0aa606fd599d1d3f231a0ed861af56f3b2a0"
+          },
+          "engines": { "dsh": ">=0.1.5-rc.1" }
+        }
+      ]
+    }
+  ]
+}
