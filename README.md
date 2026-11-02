@@ -61,6 +61,11 @@ series. **The sidebar panel is a web-client extension and needs one DSH
 restart**; upgrading the package needs the same restart, because the old client
 bundle is already loaded in the open page.
 
+**Upgrading from a pre-rename install** (`@dsh-external/dsh-subagent-antigravity`)?
+Remove the old package first. Both declare the same mount id
+(`dsh-subagent-antigravity`), and nothing in the loader refuses two entries with
+one id — so an install that keeps both ends up with the plugin mounted twice.
+
 ---
 
 ## Usage

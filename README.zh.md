@@ -56,6 +56,10 @@ npm 账号，也不需要在本机构建。
 web client 扩展，需要重启一次 DSH 才会出现**；升级安装包后同样要重启，
 因为旧版本的 client bundle 已被加载进页面。
 
+**从改名前的版本升级**（`@dsh-external/dsh-subagent-antigravity`）？请先卸掉旧包。
+两个包声明的是同一个 mount id（`dsh-subagent-antigravity`），而 loader 不会拒绝
+重复 id —— 两个都留着，插件会被挂载两次。
+
 ---
 
 ## 使用方法

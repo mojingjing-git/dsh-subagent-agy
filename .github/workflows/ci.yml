@@ -63,4 +63,13 @@ jobs:
       - name: Panel suites
         run: npm run test:panel
 
+      - name: Panel suites under a non-UTC zone
+        # The time-zone-independent fixtures cannot prove that dayKeyOf buckets
+        # by the LOCAL calendar on their own: on a UTC runner "local" and "UTC"
+        # are the same thing, so the property the test names is unobservable.
+        # Running the same suite in a real zone makes the distinction visible.
+        env:
+          TZ: Asia/Shanghai
+        run: node test/agy-usage-log.mjs
+
 
