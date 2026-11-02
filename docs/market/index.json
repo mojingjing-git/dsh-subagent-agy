@@ -40,12 +40,12 @@
       },
       "versions": [
         {
-          "version": "0.3.0",
-          "publishTimestamp": 1793581453,
+          "version": "0.3.1",
+          "publishTimestamp": 1793582328,
           "source": {
             "type": "git",
             "url": "https://github.com/mojingjing-git/dsh-subagent-agy",
-            "commit": "8abc0aa606fd599d1d3f231a0ed861af56f3b2a0"
+            "commit": "49a692e0c5ff4ea3250927a3b204af2534b9d8bc"
           },
           "engines": { "dsh": ">=0.1.5-rc.1" }
         }
