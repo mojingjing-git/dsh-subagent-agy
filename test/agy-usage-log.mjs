@@ -50,12 +50,16 @@ check('parseTranscript keeps token-bearing model steps and skips the rest', () =
 })
 
 check('summarize zero-fills the window and total includes cache reads', () => {
-  const now = new Date('2026-10-29T12:00:00+08:00').getTime()
+  // Local-time construction on purpose: summarize/dayKeyOf bucket by the LOCAL
+  // calendar day, so a literal "+08:00" timestamp asserts this machine's zone
+  // rather than the function (CI runs in UTC and would land on the day before).
+  const at = (day, hour) => new Date(2026, 9, day, hour, 0).getTime()
+  const now = at(29, 12)
   const rows = [
-    { t: new Date('2026-10-29T09:00:00+08:00').getTime(), input: 1000, output: 100, cacheRead: 5000 },
-    { t: new Date('2026-10-24T09:00:00+08:00').getTime(), input: 200, output: 20, cacheRead: 0 },
+    { t: at(29, 9), input: 1000, output: 100, cacheRead: 5000 },
+    { t: at(24, 9), input: 200, output: 20, cacheRead: 0 },
     // Nine days back: outside the 7-day window, still counted in allTime.
-    { t: new Date('2026-10-20T09:00:00+08:00').getTime(), input: 7, output: 1, cacheRead: 0 },
+    { t: at(20, 9), input: 7, output: 1, cacheRead: 0 },
   ]
   const report = summarize(rows, now, 7)
   assert.equal(report.days.length, 7)
@@ -69,8 +73,10 @@ check('summarize zero-fills the window and total includes cache reads', () => {
 })
 
 check('summarize buckets by the local calendar day, not by UTC', () => {
-  const now = new Date('2026-10-29T12:00:00+08:00').getTime()
-  const midnight = new Date('2026-10-29T00:30:00+08:00').getTime()
+  // 00:30 local: still today locally, while a UTC-based bucket would file it
+  // under the previous day for any zone east of Greenwich.
+  const midnight = new Date(2026, 9, 29, 0, 30).getTime()
+  const now = new Date(2026, 9, 29, 12, 0).getTime()
   assert.equal(dayKeyOf(midnight), '2026-10-29')
   const report = summarize([{ t: midnight, input: 5, output: 1, cacheRead: 0 }], now, 7)
   assert.equal(report.days[6].total, 6, 'the 00:30 local row belongs to today')
@@ -87,12 +93,18 @@ try {
   }
   const cli = join(scratch, 'cli')
   const ide = join(scratch, 'ide')
-  writeTranscript(cli, 'conv-a', [line('2026-10-29T06:00:00Z', 100, 10, 0)])
-  writeTranscript(ide, 'conv-b', [line('2026-10-29T07:00:00Z', 200, 20, 300)])
+  // Relative to now, not a literal date: the rows must land inside the 7-day
+  // window AND before `now` in every time zone. A fixed "+08:00" pair put the
+  // second store hours in the future for any zone west of Greenwich, which
+  // dropped it from the window.
+  const scanNow = Date.now()
+  const hoursAgo = (hours) => new Date(scanNow - hours * 3_600_000).toISOString()
+  writeTranscript(cli, 'conv-a', [line(hoursAgo(2), 100, 10, 0)])
+  writeTranscript(ide, 'conv-b', [line(hoursAgo(1), 200, 20, 300)])
   const cachePath = join(scratch, 'cache.json')
 
   check('readTokenUsage scans every root and counts both stores', () => {
-    const report = readTokenUsage({ roots: [cli, ide], cachePath, now: new Date('2026-10-29T12:00:00+08:00').getTime() })
+    const report = readTokenUsage({ roots: [cli, ide], cachePath, now: scanNow })
     assert.equal(report.files, 2)
     assert.equal(report.reused, 0)
     assert.equal(report.window.total, 100 + 10 + 200 + 20 + 300)
@@ -107,11 +119,11 @@ try {
 
   check('an appended transcript is re-read, not double counted', () => {
     const path = writeTranscript(cli, 'conv-a', [
-      line('2026-10-29T06:00:00Z', 100, 10, 0),
-      line('2026-10-29T06:10:00Z', 50, 5, 1000),
+      line(hoursAgo(2), 100, 10, 0),
+      line(hoursAgo(1), 50, 5, 1000),
     ])
     utimesSync(path, new Date(), new Date(Date.now() + 1000))
-    const report = readTokenUsage({ roots: [cli, ide], cachePath, now: new Date('2026-10-29T12:00:00+08:00').getTime() })
+    const report = readTokenUsage({ roots: [cli, ide], cachePath, now: scanNow })
     assert.equal(report.reused, 1)
     assert.equal(report.window.total, 100 + 10 + 200 + 20 + 300 + 50 + 5 + 1000)
   })
