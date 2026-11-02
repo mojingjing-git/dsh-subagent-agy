@@ -2610,6 +2610,20 @@ async function settleForegroundRun(
 }
 
 /**
+ * The `owner` value `ctx.jobs.start` wants.
+ *
+ * dsh-jobs resolves it as a session id (`agents.get(session)`), but the
+ * published declaration types the field as `Agent`. The declaration lags the
+ * implementation, so the cast has to happen somewhere. It happens here, once,
+ * rather than at each call site: "tidying" one of those casts back to the Agent
+ * object fails at runtime with `session "[object Object]" has no live agent`,
+ * which is not a type error anyone would notice.
+ */
+function jobOwner(parent: Agent): Agent {
+  return parent.session.id as unknown as Agent
+}
+
+/**
  * Await a foreground run, but stop holding the session once
  * `config.foregroundPromoteMs` has elapsed.
  *
@@ -2862,7 +2876,7 @@ export function apply(ctx: Context, config: Config): void {
                 const bg = await provider.startResumeBackground(request, record.conversationId, record.cwd, args.dirs ?? [], overrides)
                 let jobId: string
                 try {
-                  jobId = jobs.start({ kind: 'antigravity', label, owner: parent.session.id as unknown as Agent, run: () => bg })
+                  jobId = jobs.start({ kind: 'antigravity', label, owner: jobOwner(parent), run: () => bg })
                 } catch (error) {
                   bg.cancel()
                   throw error
@@ -2924,10 +2938,7 @@ export function apply(ctx: Context, config: Config): void {
                   // `session "[object Object]" has no live agent` when handed an
                   // Agent. That throw also made every `background: true` call
                   // fail, which is why callers stopped using the tool.
-                  // The published d.ts types `owner` as `Agent` while the runtime
-                  // resolves it as a session id — the declaration lags the
-                  // implementation, so the cast carries the runtime contract.
-                  owner: parent.session.id as unknown as Agent,
+                  owner: jobOwner(parent),
                   run: () => bg,
                 })
               } catch (error) {

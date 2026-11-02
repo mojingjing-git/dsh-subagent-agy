@@ -1,0 +1,9 @@
+# Normalise line endings in the repository, so a tarball built from a clean
+# clone is byte-identical to the published asset regardless of the builder's
+# core.autocrlf. Without this the same commit produced two different sha256s.
+* text=auto eol=lf
+
+# Binary: never normalise.
+*.tgz  binary
+*.png  binary
+*.ico  binary

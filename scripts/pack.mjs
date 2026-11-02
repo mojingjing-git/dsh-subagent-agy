@@ -49,7 +49,7 @@ const INCLUDE = [
 ]
 
 /** Never ship these even if nested inside an included directory. */
-const EXCLUDE = /(^|[\\/])(node_modules|test|scripts|\.git|\.DS_Store)([\\/]|$)|\.[mc]?js\.map$|\/index\.js\.map$/
+const EXCLUDE = /(^|[\\/])(node_modules|test|scripts|\.git|\.DS_Store)([\\/]|$)|(^|[\\/])docs[\\/]research([\\/]|$)|\.[mc]?js\.map$|\/index\.js\.map$/
 
 /** A fixed timestamp: 1985-10-26T08:15:00Z, the tar epoch npm uses. */
 const MTIME = 499162500

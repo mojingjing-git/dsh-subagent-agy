@@ -1,5 +1,5 @@
 # dsh-subagent-antigravity bundle patch: register the plugin entry so
-# `dsh plugin add github:ZEM17/dsh-subagent-agy` (or npm install) mounts it.
+# `dsh plugin add github:mojingjing-git/dsh-subagent-agy` (or npm install) mounts it.
 - insert:
     - id: dsh-subagent-antigravity
       name: '@mojingjing-git/dsh-subagent-antigravity'

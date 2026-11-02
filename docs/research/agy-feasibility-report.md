@@ -30,10 +30,10 @@
 ### 1. 面板轮询改 SSE/WebSocket
 
 #### 证据
-- **前端定时器**：[src/client.js:122](file:///C:/Users/wrz20/Documents/deepseek-harness/default-workspace/dsh-subagent-agy/src/client.js#L122)（Footer running 5s）、[src/client.js:141](file:///C:/Users/wrz20/Documents/deepseek-harness/default-workspace/dsh-subagent-agy/src/client.js#L141)（Footer usage 30s）、[src/client.js:716-718](file:///C:/Users/wrz20/Documents/deepseek-harness/default-workspace/dsh-subagent-agy/src/client.js#L716-L718)（Panel 20s 会话 / 30s 配额 / 60s Token）、[src/client.js:740](file:///C:/Users/wrz20/Documents/deepseek-harness/default-workspace/dsh-subagent-agy/src/client.js#L740)（Active run 400ms）。
-- **服务端 Drain**：[src/agy-panel.ts:109, 142](file:///C:/Users/wrz20/Documents/deepseek-harness/default-workspace/dsh-subagent-agy/src/agy-panel.ts#L109)（`POLL_MS = 250`）。
-- **空闲反复 spawn agy**：[src/agy-usage.ts:110](file:///C:/Users/wrz20/Documents/deepseek-harness/default-workspace/dsh-subagent-agy/src/agy-usage.ts#L110) 定义 `DEFAULT_TTL_MS = 60 * 1000`；[src/client.js:133-137](file:///C:/Users/wrz20/Documents/deepseek-harness/default-workspace/dsh-subagent-agy/src/client.js#L133-L137) 在始终挂载的 Footer 徽标中，每 60 秒触发 `post('/usage', { force: true })`，进而调用 [src/index.ts:2506](file:///C:/Users/wrz20/Documents/deepseek-harness/default-workspace/dsh-subagent-agy/src/index.ts#L2506) 执行 `spawnUsage` 启动真实 `agy.exe` 进程（单次耗时 9-12s）。
-- **路由能力**：[src/agy-panel.ts:29-32, 289-294](file:///C:/Users/wrz20/Documents/deepseek-harness/default-workspace/dsh-subagent-agy/src/agy-panel.ts#L289-L294) 和 [docs/sidebar-panel.md:14-16](file:///C:/Users/wrz20/Documents/deepseek-harness/default-workspace/dsh-subagent-agy/docs/sidebar-panel.md#L14-L16)：
+- **前端定时器**：[src/client.js:122](src/client.js#L122)（Footer running 5s）、[src/client.js:141](src/client.js#L141)（Footer usage 30s）、[src/client.js:716-718](src/client.js#L716-L718)（Panel 20s 会话 / 30s 配额 / 60s Token）、[src/client.js:740](src/client.js#L740)（Active run 400ms）。
+- **服务端 Drain**：[src/agy-panel.ts:109, 142](src/agy-panel.ts#L109)（`POLL_MS = 250`）。
+- **空闲反复 spawn agy**：[src/agy-usage.ts:110](src/agy-usage.ts#L110) 定义 `DEFAULT_TTL_MS = 60 * 1000`；[src/client.js:133-137](src/client.js#L133-L137) 在始终挂载的 Footer 徽标中，每 60 秒触发 `post('/usage', { force: true })`，进而调用 [src/index.ts:2506](src/index.ts#L2506) 执行 `spawnUsage` 启动真实 `agy.exe` 进程（单次耗时 9-12s）。
+- **路由能力**：[src/agy-panel.ts:29-32, 289-294](src/agy-panel.ts#L289-L294) 和 [docs/sidebar-panel.md:14-16](docs/sidebar-panel.md#L14-L16)：
 ```ts
 interface WebServerLike {
   register(route: unknown): unknown
@@ -50,7 +50,7 @@ function jsonRoute(path: string, handler: Handler): unknown {
 #### 可行性 + 阻塞点
 - **结论：有条件可行（仅限 POST fetch 流式），但严重受阻**。
 - **阻塞点 1（WebSocket 完全不可行）**：DSH 的 `webServer.register` 只接收 HTTP 请求 handler `(req, res)`，根本未暴露底层 Node `http.Server` 的 `'upgrade'` 事件，无法建立 WebSocket。
-- **阻塞点 2（标准 SSE 打穿安全边界）**：如 [docs/sidebar-panel.md:18-36](file:///C:/Users/wrz20/Documents/deepseek-harness/default-workspace/dsh-subagent-agy/docs/sidebar-panel.md#L18-L36) 所述，DSH 宿主没有 Origin 校验和 CSRF 保护，插件全部依赖 `POST + JSON` 验证浏览器 Origin 避免 DNS rebinding 攻击。浏览器自带的 `EventSource` 只支持 `GET`，若开放 GET 接口，恶意网页即可在受害者机器上跨站嗅探流式数据。
+- **阻塞点 2（标准 SSE 打穿安全边界）**：如 [docs/sidebar-panel.md:18-36](docs/sidebar-panel.md#L18-L36) 所述，DSH 宿主没有 Origin 校验和 CSRF 保护，插件全部依赖 `POST + JSON` 验证浏览器 Origin 避免 DNS rebinding 攻击。浏览器自带的 `EventSource` 只支持 `GET`，若开放 GET 接口，恶意网页即可在受害者机器上跨站嗅探流式数据。
 - **阻塞点 3（单消费者游标破坏）**：`readOutput()` 是破坏性单次读取，多客户端/多 pane 需自建 PubSub 广播中心与回放重试机制。
 
 #### 实现要点（若要解决核心痛点）
@@ -70,18 +70,18 @@ if (isPanelOpen && payload.report?.stale) {
 ### 2. 长 prompt 改走 stdin
 
 #### 证据
-- [src/index.ts:168-174](file:///C:/Users/wrz20/Documents/deepseek-harness/default-workspace/dsh-subagent-agy/src/index.ts#L168-L174)：
+- [src/index.ts:168-174](src/index.ts#L168-L174)：
 ```ts
 const MAX_ARGV_PROMPT_CHARS = 30_000
 ```
-- [src/index.ts:1514-1518](file:///C:/Users/wrz20/Documents/deepseek-harness/default-workspace/dsh-subagent-agy/src/index.ts#L1514-L1518)：
+- [src/index.ts:1514-1518](src/index.ts#L1514-L1518)：
 ```ts
 if (effectivePrompt.length > MAX_ARGV_PROMPT_CHARS) {
   if (!support.promptFile) {
     throw new Error(`${PREFIX}: prompt is ${effectivePrompt.length} chars, exceeding the ${MAX_ARGV_PROMPT_CHARS}-char argv limit, and this agy build does not support --prompt-file...`)
   }
 ```
-- [src/index.ts:1751, 2155](file:///C:/Users/wrz20/Documents/deepseek-harness/default-workspace/dsh-subagent-agy/src/index.ts#L1751)：`stdio: { stdin: 'ignore' }`。
+- [src/index.ts:1751, 2155](src/index.ts#L1751)：`stdio: { stdin: 'ignore' }`。
 - 实测 `agy --help` 输出：
   - 只有 `--input-format (text, stream-json)`，其中 `stream-json reads one NDJSON message per line from stdin and runs a turn for each`。
   - `-p, --print` 是运行单次 prompt 的参数，官方 flag 没有 `-p -` 约定（传入 `-` 会被 Go 视作字面量 prompt `"-"`）。
@@ -92,7 +92,7 @@ if (effectivePrompt.length > MAX_ARGV_PROMPT_CHARS) {
 #### 可行性 + 阻塞点
 - **结论：有条件可行（但有更好的原生路径）**。
 - **阻塞点**：`agy` 并非标准 Unix 管道工具，在 `--print` 模式下直接把 stdin 当做 prompt 的语法未获官方文档支持。如果通过 `--input-format stream-json` 走 stdin，必须以 NDJSON 形式封装交互转轮，彻底改变子进程生命周期。
-- **官方推荐替代方案**：如 [docs/agy-integration.md:69-71](file:///C:/Users/wrz20/Documents/deepseek-harness/default-workspace/dsh-subagent-agy/docs/agy-integration.md#L69-L71) 所述，将超长上下文写入会话工作区的临时文件（如 `.agy-task-prompt.md`），argv 中仅传递短 prompt（“请按 .agy-task-prompt.md 的要求执行”），既绕过 32KB 限制，又跨 agy 所有版本 100% 兼容。
+- **官方推荐替代方案**：如 [docs/agy-integration.md:69-71](docs/agy-integration.md#L69-L71) 所述，将超长上下文写入会话工作区的临时文件（如 `.agy-task-prompt.md`），argv 中仅传递短 prompt（“请按 .agy-task-prompt.md 的要求执行”），既绕过 32KB 限制，又跨 agy 所有版本 100% 兼容。
 
 #### 实现要点
 ```ts
@@ -110,14 +110,14 @@ promptArgv = ['-p', `Read instructions from ${promptFile} and execute them thoro
 ### 3. 能力探测加版本感知
 
 #### 证据
-- [src/index.ts:1381](file:///C:/Users/wrz20/Documents/deepseek-harness/default-workspace/dsh-subagent-agy/src/index.ts#L1381)：
+- [src/index.ts:1381](src/index.ts#L1381)：
 ```ts
 const identity = `${exe}@${statStamp(exe)}`
 if (this.flagSupport !== undefined && this.flagProbeIdentity === identity) return this.flagSupport
 const cached = readFlagCache(this.config, identity)
 ```
-- [src/index.ts:403-408](file:///C:/Users/wrz20/Documents/deepseek-harness/default-workspace/dsh-subagent-agy/src/index.ts#L403-L408)：`statStamp` 为 `return `${stat.size}:${stat.mtimeMs}``。
-- [src/index.ts:1341, 1420](file:///C:/Users/wrz20/Documents/deepseek-harness/default-workspace/dsh-subagent-agy/src/index.ts#L1341)：首次或 mtime 变化时，调用 `agy help` 及 `agy --print x --print-timeout 1ms`。探测结果持久化在 `~/.dsh/agy-flag-cache.json`。
+- [src/index.ts:403-408](src/index.ts#L403-L408)：`statStamp` 为 `return `${stat.size}:${stat.mtimeMs}``。
+- [src/index.ts:1341, 1420](src/index.ts#L1341)：首次或 mtime 变化时，调用 `agy help` 及 `agy --print x --print-timeout 1ms`。探测结果持久化在 `~/.dsh/agy-flag-cache.json`。
 
 #### 真实痛点评估
 - **完全不痛**。`statSync(exe)` 获取文件大小与 mtime 是操作系统纳秒级调用（耗时 <0.1ms）。日常使用中 agy 只要没被升级，直接命中内存与磁盘缓存，耗时为 0。
@@ -133,8 +133,8 @@ const cached = readFlagCache(this.config, identity)
 ### 4. 会话注册表改 SQLite / 分片
 
 #### 证据
-- [src/index.ts:164](file:///C:/Users/wrz20/Documents/deepseek-harness/default-workspace/dsh-subagent-agy/src/index.ts#L164)：`const MAX_TASK_RECORDS = 50`。
-- [src/index.ts:610-621](file:///C:/Users/wrz20/Documents/deepseek-harness/default-workspace/dsh-subagent-agy/src/index.ts#L610-L621)：
+- [src/index.ts:164](src/index.ts#L164)：`const MAX_TASK_RECORDS = 50`。
+- [src/index.ts:610-621](src/index.ts#L610-L621)：
 ```ts
 function doSaveRegistry(config: Config, records: Record<string, TaskRecord>): void {
   const entries = Object.entries(records)
@@ -144,16 +144,16 @@ function doSaveRegistry(config: Config, records: Record<string, TaskRecord>): vo
   writeJsonAtomic(base, JSON.stringify(trimmed, null, 2))
 }
 ```
-- [src/agy-quota-log.ts:85, 96](file:///C:/Users/wrz20/Documents/deepseek-harness/default-workspace/dsh-subagent-agy/src/agy-quota-log.ts#L85)：`appendFileSync` 追加写入，`readQuotaLog` 每次全量 `readFileSync`。
+- [src/agy-quota-log.ts:85, 96](src/agy-quota-log.ts#L85)：`appendFileSync` 追加写入，`readQuotaLog` 每次全量 `readFileSync`。
 
 #### 真实痛点评估
 - **写性能完全不痛**：50 条记录的 JSON 文件仅 **5KB 左右**，通过微任务队列（`registryTail`）在任务结束时写入一次，耗时不到 1ms，根本谈不上 I/O 瓶颈。
-- **真正的痛点是 50 条上限严重不足**：用户多聊几个任务后，早期的 task key 就被截断踢出。后续模型调用 `antigravity_followup` 恢复这些会话时直接抛错 `no such task`（见 [src/index.ts:2636](file:///C:/Users/wrz20/Documents/deepseek-harness/default-workspace/dsh-subagent-agy/src/index.ts#L2636)），即使底层 agy 的数据库里还完整保留着该会话。
+- **真正的痛点是 50 条上限严重不足**：用户多聊几个任务后，早期的 task key 就被截断踢出。后续模型调用 `antigravity_followup` 恢复这些会话时直接抛错 `no such task`（见 [src/index.ts:2636](src/index.ts#L2636)），即使底层 agy 的数据库里还完整保留着该会话。
 - `agy-quota-log.jsonl` 无轮转清理确实长期会积累数千行，全量解析有些浪费。
 
 #### 可行性 + 阻塞点
 - **结论：方向错误（过度设计）**。
-- `node:sqlite` 在 Node 22 中仍带有 Experimental 标记。引入 SQLite 会增加二进制依赖和数据损坏排查成本，丢失纯文本自愈能力（如现有的 `.corrupt` 自动备份自愈，见 [src/index.ts:513](file:///C:/Users/wrz20/Documents/deepseek-harness/default-workspace/dsh-subagent-agy/src/index.ts#L513)）。
+- `node:sqlite` 在 Node 22 中仍带有 Experimental 标记。引入 SQLite 会增加二进制依赖和数据损坏排查成本，丢失纯文本自愈能力（如现有的 `.corrupt` 自动备份自愈，见 [src/index.ts:513](src/index.ts#L513)）。
 - **极简正解**：直接将 `MAX_TASK_RECORDS` 从 50 改为 500 或 1000（文件大小仍 <100KB），并在 `appendQuotaSnapshot` 增加 30 天保留期清理。
 
 #### 实现要点
@@ -171,11 +171,11 @@ const MAX_TASK_RECORDS = 500
 ### 5. 会话隔离 / 沙箱
 
 #### 证据
-- [src/index.ts:243-244](file:///C:/Users/wrz20/Documents/deepseek-harness/default-workspace/dsh-subagent-agy/src/index.ts#L243-L244)：
+- [src/index.ts:243-244](src/index.ts#L243-L244)：
 ```ts
 sandbox: z.boolean().default(false),
 ```
-- [src/index.ts:904, 1556](file:///C:/Users/wrz20/Documents/deepseek-harness/default-workspace/dsh-subagent-agy/src/index.ts#L904)：
+- [src/index.ts:904, 1556](src/index.ts#L904)：
 ```ts
 if (config.sandbox && support.sandbox) baseArgv.push('--sandbox')
 ```
@@ -205,8 +205,8 @@ sandbox: { type: 'boolean', description: 'Optional. Run with terminal restrictio
 ### 6. 步骤时间线增量同步
 
 #### 证据
-- [src/agy-panel.ts:112](file:///C:/Users/wrz20/Documents/deepseek-harness/default-workspace/dsh-subagent-agy/src/agy-panel.ts#L112)：`stepsVersion(steps)` 仅用于检测数组内容是否有变。
-- [src/agy-steps.ts:253-258](file:///C:/Users/wrz20/Documents/deepseek-harness/default-workspace/dsh-subagent-agy/src/agy-steps.ts#L253-L258)：
+- [src/agy-panel.ts:112](src/agy-panel.ts#L112)：`stepsVersion(steps)` 仅用于检测数组内容是否有变。
+- [src/agy-steps.ts:253-258](src/agy-steps.ts#L253-L258)：
 ```ts
 export function snapshotSteps(steps: readonly StepEvent[]): StepEvent[] {
   const window = steps.length > MAX_STEPS ? steps.slice(steps.length - MAX_STEPS) : steps
@@ -214,10 +214,10 @@ export function snapshotSteps(steps: readonly StepEvent[]): StepEvent[] {
 }
 ```
 注释中提到“allocates a fresh timeline on every 250 ms”是在解释历史原因，**现有代码已经优化为浅拷贝切片 `[...window]`**。
-- [src/client.js:745-753](file:///C:/Users/wrz20/Documents/deepseek-harness/default-workspace/dsh-subagent-agy/src/client.js#L745-L753)：**前端实时轮询 `/run` 时压根没有接收或渲染 `payload.steps`**！前端只更新了 `text`、`status`、`tool`、`error`，steps 仅在会话结束时通过 `/history` 获取。
+- [src/client.js:745-753](src/client.js#L745-L753)：**前端实时轮询 `/run` 时压根没有接收或渲染 `payload.steps`**！前端只更新了 `text`、`status`、`tool`、`error`，steps 仅在会话结束时通过 `/history` 获取。
 
 #### 真实痛点评估
-- **完全不痛 / 伪问题**。单次运行最多限制在 `MAX_STEPS = 200`（[src/agy-steps.ts:38](file:///C:/Users/wrz20/Documents/deepseek-harness/default-workspace/dsh-subagent-agy/src/agy-steps.ts#L38)），序列化后仅几 KB，且前端实时轮询根本没用它。
+- **完全不痛 / 伪问题**。单次运行最多限制在 `MAX_STEPS = 200`（[src/agy-steps.ts:38](src/agy-steps.ts#L38)），序列化后仅几 KB，且前端实时轮询根本没用它。
 
 #### 可行性 + 阻塞点
 - **结论：不可行 / 伪需求，直接放弃**。
@@ -228,7 +228,7 @@ export function snapshotSteps(steps: readonly StepEvent[]): StepEvent[] {
 ### 7. Token 记账改事件驱动
 
 #### 证据
-- [src/agy-usage-log.ts:236-281](file:///C:/Users/wrz20/Documents/deepseek-harness/default-workspace/dsh-subagent-agy/src/agy-usage-log.ts#L236-L281)：
+- [src/agy-usage-log.ts:236-281](src/agy-usage-log.ts#L236-L281)：
 ```ts
 const cached = cache.files[path]
 if (cached !== undefined && cached.mtime === mtime && cached.size === size) {
@@ -238,7 +238,7 @@ if (cached !== undefined && cached.mtime === mtime && cached.size === size) {
   continue
 }
 ```
-- [src/agy-usage-log.ts:9-11](file:///C:/Users/wrz20/Documents/deepseek-harness/default-workspace/dsh-subagent-agy/src/agy-usage-log.ts#L9-L11)：
+- [src/agy-usage-log.ts:9-11](src/agy-usage-log.ts#L9-L11)：
 `"The second one is the Antigravity IDE's store: those conversations never show up in this plugin's panel, but they spend the same account quota, so leaving them out would under-count by roughly 4x on a normal day."`
 
 #### 真实痛点评估
@@ -253,8 +253,8 @@ if (cached !== undefined && cached.mtime === mtime && cached.size === size) {
 ### 8. 可观测性
 
 #### 证据
-- [src/index.ts:1829, 1840](file:///C:/Users/wrz20/Documents/deepseek-harness/default-workspace/dsh-subagent-agy/src/index.ts#L1829)：虽然内部实现了 `formatRunSummary`、`explainEmptyResult` 并把 ndjson 流持久化到 `~/.dsh/agy-transcripts`，但这些是拼装在模型返回值里的文本。
-- [src/index.ts:1891, 3031](file:///C:/Users/wrz20/Documents/deepseek-harness/default-workspace/dsh-subagent-agy/src/index.ts#L1891)：`ctx.logger` 只打非结构化的字符串消息，没有输出标准格式的指标事件（如 `[agy:run] runId=... duration=... tokens={in,out} exitCode=...`）。
+- [src/index.ts:1829, 1840](src/index.ts#L1829)：虽然内部实现了 `formatRunSummary`、`explainEmptyResult` 并把 ndjson 流持久化到 `~/.dsh/agy-transcripts`，但这些是拼装在模型返回值里的文本。
+- [src/index.ts:1891, 3031](src/index.ts#L1891)：`ctx.logger` 只打非结构化的字符串消息，没有输出标准格式的指标事件（如 `[agy:run] runId=... duration=... tokens={in,out} exitCode=...`）。
 - 缺少一个用于自检环境的 `antigravity_doctor` 工具。
 
 #### 真实痛点评估
@@ -279,15 +279,15 @@ ctx.logger.info(`[agy:metric] runId=${plan.id} model=${plan.model} duration=${du
 ### 9. 类型与构建
 
 #### 证据
-- [scripts/build.mjs:1-19, 46-65](file:///C:/Users/wrz20/Documents/deepseek-harness/default-workspace/dsh-subagent-agy/scripts/build.mjs#L1)：详细解释了为何存在 `src/peers.d.ts`：本地 DSH 环境的 peer 依赖没有 `.d.ts` 文件，构建脚本通过探测 `peerTypesResolve()`，自动选择 `tsconfig.build.json`（排除 shim）或 `tsconfig.local.json`（包含 shim）。
-- [tsconfig.json:17](file:///C:/Users/wrz20/Documents/deepseek-harness/default-workspace/dsh-subagent-agy/tsconfig.json#L17)：
+- [scripts/build.mjs:1-19, 46-65](scripts/build.mjs#L1)：详细解释了为何存在 `src/peers.d.ts`：本地 DSH 环境的 peer 依赖没有 `.d.ts` 文件，构建脚本通过探测 `peerTypesResolve()`，自动选择 `tsconfig.build.json`（排除 shim）或 `tsconfig.local.json`（包含 shim）。
+- [tsconfig.json:17](tsconfig.json#L17)：
 ```json
 "sourceMap": true,
 "declaration": true,
 "declarationDir": "lib/types"
 ```
 现有 `lib/` 目录下每个 JS 文件均带有 `.js.map`！
-- [scripts/build.mjs:108-150](file:///C:/Users/wrz20/Documents/deepseek-harness/default-workspace/dsh-subagent-agy/scripts/build.mjs#L108-L150)：构建脚本内置了 VM 隔离沙箱，模拟 DSH 的 `window.__ModuleLoader__` 评估 `client.js`。
+- [scripts/build.mjs:108-150](scripts/build.mjs#L108-L150)：构建脚本内置了 VM 隔离沙箱，模拟 DSH 的 `window.__ModuleLoader__` 评估 `client.js`。
 
 #### 真实痛点评估
 - **完全不痛**。构建只需 1-2 秒，产物完备，且已具备 sourcemap。
@@ -304,14 +304,14 @@ ctx.logger.info(`[agy:metric] runId=${plan.id} model=${plan.model} duration=${du
 ### 10. 多会话并行
 
 #### 证据
-- [src/index.ts:1629, 1665](file:///C:/Users/wrz20/Documents/deepseek-harness/default-workspace/dsh-subagent-agy/src/index.ts#L1629)：
+- [src/index.ts:1629, 1665](src/index.ts#L1629)：
 ```ts
 private followupGates = new Map<string, Promise<void>>()
 // key 是 conversationId！
 const prev = this.followupGates.get(conversationId) ?? Promise.resolve()
 ```
-- [src/index.ts:2617, 2796](file:///C:/Users/wrz20/Documents/deepseek-harness/default-workspace/dsh-subagent-agy/src/index.ts#L2617)：所有工具均声明 `isConcurrencySafe: () => true`。
-- [docs/architecture.md:30-31](file:///C:/Users/wrz20/Documents/deepseek-harness/default-workspace/dsh-subagent-agy/docs/architecture.md#L30-L31)：
+- [src/index.ts:2617, 2796](src/index.ts#L2617)：所有工具均声明 `isConcurrencySafe: () => true`。
+- [docs/architecture.md:30-31](docs/architecture.md#L30-L31)：
 `"Serialization — one gate per conversation id, so two concurrent prompts cannot interleave writes into the same agy conversation."`
 
 #### 真实痛点评估
@@ -327,14 +327,14 @@ const prev = this.followupGates.get(conversationId) ?? Promise.resolve()
 ### 11. 中间人审批流
 
 #### 证据
-- [src/index.ts:1825-1845](file:///C:/Users/wrz20/Documents/deepseek-harness/default-workspace/dsh-subagent-agy/src/index.ts#L1825-L1845) & [src/index.ts:2357-2365](file:///C:/Users/wrz20/Documents/deepseek-harness/default-workspace/dsh-subagent-agy/src/index.ts#L2357-L2365)：
+- [src/index.ts:1825-1845](src/index.ts#L1825-L1845) & [src/index.ts:2357-2365](src/index.ts#L2357-L2365)：
 ```ts
 if (parsed.response.trim().length === 0) {
   const detail = explainEmptyResult({ denied, stderr, transcript: transcriptPath })
   return { output: textBlocks([detail, summary ?? ''].join('\n\n')), stopReason: 'error' }
 }
 ```
-- [docs/agy-integration.md:79-82](file:///C:/Users/wrz20/Documents/deepseek-harness/default-workspace/dsh-subagent-agy/docs/agy-integration.md#L79-L82)：`"These are advisory; the plugin cannot intercept agy's internal tool calls."`
+- [docs/agy-integration.md:79-82](docs/agy-integration.md#L79-L82)：`"These are advisory; the plugin cannot intercept agy's internal tool calls."`
 
 #### 真实痛点评估
 - 痛点确实存在：在无头模式下，一旦未传 `--dangerously-skip-permissions`，涉及文件修改的工具调用就会被 agy 拒绝，返回空响应。
@@ -349,7 +349,7 @@ if (parsed.response.trim().length === 0) {
 ### 12. 跨平台登录
 
 #### 证据
-- [src/index.ts:1285-1309](file:///C:/Users/wrz20/Documents/deepseek-harness/default-workspace/dsh-subagent-agy/src/index.ts#L1285-L1309)：
+- [src/index.ts:1285-1309](src/index.ts#L1285-L1309)：
 ```ts
 if (process.platform === 'win32') {
   // PowerShell Start-Process 弹窗
@@ -385,11 +385,11 @@ if (process.platform === 'darwin') {
 ### 13. 插件热更新
 
 #### 证据
-- [package.json:38-46](file:///C:/Users/wrz20/Documents/deepseek-harness/default-workspace/dsh-subagent-agy/package.json#L38-L46)：
+- [package.json:38-46](package.json#L38-L46)：
 ```json
 "dsh": { "client": { "inject": [], "platform": "web" } }
 ```
-- [docs/sidebar-panel.md:92-95](file:///C:/Users/wrz20/Documents/deepseek-harness/default-workspace/dsh-subagent-agy/docs/sidebar-panel.md#L92-L95) & [docs/development.md:55-66](file:///C:/Users/wrz20/Documents/deepseek-harness/default-workspace/dsh-subagent-agy/docs/development.md#L55-L66)：
+- [docs/sidebar-panel.md:92-95](docs/sidebar-panel.md#L92-L95) & [docs/development.md:55-66](docs/development.md#L55-L66)：
 客户端是通过 `window.__ModuleLoader__.load({ id, factory })` 在宿主启动时以经典脚本 `<script>` 注入执行的。
 
 #### 真实痛点评估
@@ -404,13 +404,13 @@ if (process.platform === 'darwin') {
 ### 14. 面板 UI 状态一致性
 
 #### 证据
-- **服务端重置标志竞争**：[src/agy-panel.ts:177-178](file:///C:/Users/wrz20/Documents/deepseek-harness/default-workspace/dsh-subagent-agy/src/agy-panel.ts#L177-L178)：
+- **服务端重置标志竞争**：[src/agy-panel.ts:177-178](src/agy-panel.ts#L177-L178)：
 ```ts
 const reset = !Number.isFinite(since) || since < 0 || since > run.text.length || run.resetPending
 if (reset) run.resetPending = false
 ```
 `run.resetPending` 是全局单个标志。多 Pane 或并发查询时，第一个查询直接把标志清零，第二个查询在缓冲区被截断后拿不到 `reset: true`，产生文本偏移错位！
-- **客户端缺乏请求单飞锁**：[src/client.js:740-756](file:///C:/Users/wrz20/Documents/deepseek-harness/default-workspace/dsh-subagent-agy/src/client.js#L740-L756)：
+- **客户端缺乏请求单飞锁**：[src/client.js:740-756](src/client.js#L740-L756)：
 ```javascript
 const timer = setInterval(() => {
   post('/run', { runId, since: cursorRef.current })
@@ -487,8 +487,8 @@ const tick = () => {
 ### 3. 清单里没提到，但代码里明显更值得修的问题（3 条）
 
 1. **`client.js` 缺少错误捕获导致 React 整个侧边栏白屏**：
-   [src/client.js:563-630](file:///C:/Users/wrz20/Documents/deepseek-harness/default-workspace/dsh-subagent-agy/src/client.js#L563-L630) 在渲染历史步骤时，直接读取 `step.tool.parameters`。如果某次 agy 输出了非预期的特殊结构，React 在渲染循环中抛出异常，由于缺乏 React Error Boundary，会导致整个 DSH 右侧边栏彻底崩溃变白。
+   [src/client.js:563-630](src/client.js#L563-L630) 在渲染历史步骤时，直接读取 `step.tool.parameters`。如果某次 agy 输出了非预期的特殊结构，React 在渲染循环中抛出异常，由于缺乏 React Error Boundary，会导致整个 DSH 右侧边栏彻底崩溃变白。
 2. **超长 Prompt 的降级处理缺少工作区文件自动化支持**：
-   在 [src/index.ts:1514-1518](file:///C:/Users/wrz20/Documents/deepseek-harness/default-workspace/dsh-subagent-agy/src/index.ts#L1514-L1518) 中，当 prompt > 30,000 字符且无 `--prompt-file` 时，插件直接抛出致命异常中断任务。完全可以自动将其写入工作区临时文件（如 `.dsh-prompt-payload.md`），并将 prompt 转换为短指令，避免任务直接硬报错。
+   在 [src/index.ts:1514-1518](src/index.ts#L1514-L1518) 中，当 prompt > 30,000 字符且无 `--prompt-file` 时，插件直接抛出致命异常中断任务。完全可以自动将其写入工作区临时文件（如 `.dsh-prompt-payload.md`），并将 prompt 转换为短指令，避免任务直接硬报错。
 3. **任务意外中断时未清理残留的 `.corrupt` 和临时文件**：
-   `writeJsonAtomic`（[src/index.ts:599](file:///C:/Users/wrz20/Documents/deepseek-harness/default-workspace/dsh-subagent-agy/src/index.ts#L599)）和临时 prompt 写入在 Windows 进程异常被杀时，可能会在临时目录留下孤儿文件，缺少启动时的扫描回收机制。
+   `writeJsonAtomic`（[src/index.ts:599](src/index.ts#L599)）和临时 prompt 写入在 Windows 进程异常被杀时，可能会在临时目录留下孤儿文件，缺少启动时的扫描回收机制。
