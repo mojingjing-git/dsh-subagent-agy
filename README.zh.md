@@ -1,4 +1,4 @@
-# @dsh-external/dsh-subagent-antigravity
+# @mojingjing-git/dsh-subagent-antigravity
 
 [![ci](https://github.com/mojingjing-git/dsh-subagent-agy/actions/workflows/ci.yml/badge.svg)](https://github.com/mojingjing-git/dsh-subagent-agy/actions/workflows/ci.yml)
 

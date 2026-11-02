@@ -1,6 +1,6 @@
 <#
 .SYNOPSIS
-    Rebuild @dsh-external/dsh-subagent-antigravity into an installable tarball.
+    Rebuild @mojingjing-git/dsh-subagent-antigravity into an installable tarball.
 
 .DESCRIPTION
     One command for the whole release loop the plan asks for:
@@ -147,7 +147,10 @@ foreach ($entry in $allowed) {
     if (-not (Test-Path -LiteralPath (Join-Path $root $entry))) { Die "allowlisted entry missing: $entry" }
 }
 
-$tarball = Join-Path $OutDir ("dsh-external-dsh-subagent-antigravity-{0}.tgz" -f $version)
+# Tarball name follows package.json "name" (npm pack style), not a literal, so a
+# renamed package builds under its new name.
+$slug = ($pkg.name -replace '^@', '') -replace '/', '-'
+$tarball = Join-Path $OutDir ("{0}-{1}.tgz" -f $slug, $version)
 if (Test-Path -LiteralPath $tarball) { Remove-Item -LiteralPath $tarball -Force }
 
 # Write a deterministic tar by hand: a standard `package/` prefix, sorted paths,

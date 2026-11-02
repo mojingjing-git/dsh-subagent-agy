@@ -1,5 +1,5 @@
 /**
- * @dsh-external/dsh-subagent-antigravity
+ * @mojingjing-git/dsh-subagent-antigravity
  *
  * Product subagent provider for Google Antigravity CLI (agy), following the
  * official `dsh-subagent-codex` / `dsh-subagent-claude-code` pattern:
@@ -59,7 +59,7 @@ import type { Agent } from '@deepseek-ai/dsh-agent';
 import type { ContentBlock } from '@deepseek-ai/dsh-llm';
 import { type StepEvent } from './agy-steps.js';
 export declare function resolveChildCwd(parentCwd: string | undefined, configuredCwd: string): string;
-export declare const name = "@dsh-external/dsh-subagent-antigravity";
+export declare const name = "@mojingjing-git/dsh-subagent-antigravity";
 export declare const inject: string[];
 /** Register the `antigravity` job kind with the generic jobs registry (id prefix: `antigravity-N`). */
 declare module '@deepseek-ai/dsh-subagent' {

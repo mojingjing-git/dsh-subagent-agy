@@ -1,5 +1,5 @@
 /**
- * @dsh-external/dsh-subagent-antigravity
+ * @mojingjing-git/dsh-subagent-antigravity
  *
  * Product subagent provider for Google Antigravity CLI (agy), following the
  * official `dsh-subagent-codex` / `dsh-subagent-claude-code` pattern:
@@ -115,7 +115,7 @@ function validateConfiguredCwd(cwd: string, field: string = 'cwd'): void {
   if (cwd.includes('\u0000')) throw new Error(`${field} must not contain a NUL byte`)
 }
 
-export const name = '@dsh-external/dsh-subagent-antigravity'
+export const name = '@mojingjing-git/dsh-subagent-antigravity'
 export const inject = ['subagents', 'subprocess', 'tools']
 
 /** Register the `antigravity` job kind with the generic jobs registry (id prefix: `antigravity-N`). */

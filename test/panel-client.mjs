@@ -63,7 +63,7 @@ runInNewContext(
 
 check('bundle registers through __ModuleLoader__ with the package id', () => {
   assert.notEqual(captured, null)
-  assert.equal(captured.id, '@dsh-external/dsh-subagent-antigravity')
+  assert.equal(captured.id, '@mojingjing-git/dsh-subagent-antigravity')
   assert.equal(typeof captured.factory, 'function')
 })
 
@@ -75,7 +75,7 @@ const mod = captured.factory((id) => {
 })
 
 check('module exports name/inject/apply', () => {
-  assert.equal(mod.name, '@dsh-external/dsh-subagent-antigravity')
+  assert.equal(mod.name, '@mojingjing-git/dsh-subagent-antigravity')
   // Spread first: the bundle's array lives in the VM realm and has that realm's
   // Array.prototype, which deepStrictEqual compares by identity.
   assert.deepEqual([...mod.inject], ['slots', 'sidebarRightTabs'])

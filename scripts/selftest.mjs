@@ -1,6 +1,6 @@
 #!/usr/bin/env node
 /**
- * Self-test for @dsh-external/dsh-subagent-antigravity.
+ * Self-test for @mojingjing-git/dsh-subagent-antigravity.
  *
  * Usage:
  *   node scripts/selftest.mjs          offline checks (no agy login needed)

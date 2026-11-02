@@ -1,6 +1,6 @@
 # Documentation
 
-本目录是 `@dsh-external/dsh-subagent-antigravity` 的说明文档。两份面向使用者的
+本目录是 `@mojingjing-git/dsh-subagent-antigravity` 的说明文档。两份面向使用者的
 README 留在仓库根目录（发布包需要它们），其余说明集中在这里。
 
 ## 面向使用者

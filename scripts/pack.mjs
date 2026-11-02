@@ -29,7 +29,11 @@ if (!existsSync(join(root, 'package.json'))) {
   process.exit(2)
 }
 const pkg = JSON.parse(readFileSync(join(root, 'package.json'), 'utf8'))
-const out = process.argv[3] ?? join(root, 'dist', `dsh-external-dsh-subagent-antigravity-${pkg.version}.tgz`)
+// Derive the tarball name from the package name the way `npm pack` does
+// (`@scope/name` → `scope-name`), so renaming the package does not silently
+// keep producing a file under the old name.
+const slug = pkg.name.replace(/^@/, '').replaceAll('/', '-')
+const out = process.argv[3] ?? join(root, 'dist', `${slug}-${pkg.version}.tgz`)
 mkdirSync(join(out, '..'), { recursive: true })
 
 /** Files and directories to ship, matching package.json "files". */
