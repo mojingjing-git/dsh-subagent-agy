@@ -36,8 +36,8 @@ mkdirSync(join(out, '..'), { recursive: true })
 const INCLUDE = [
   'package.json',
   'lib',
+  'docs',
   'cordis.patch.yml',
-  'PATCH.md',
   'README.md',
   'README.zh.md',
   'README.i18n.yaml',

@@ -142,7 +142,7 @@ if ($IncludeReal) {
 # ── 3. pack ─────────────────────────────────────────────────────────────────
 Step 'pack'
 
-$allowed = @('package.json', 'lib', 'cordis.patch.yml', 'PATCH.md', 'README.md', 'README.zh.md', 'README.i18n.yaml', 'LICENSE')
+$allowed = @('package.json', 'lib', 'docs', 'cordis.patch.yml', 'README.md', 'README.zh.md', 'README.i18n.yaml', 'LICENSE')
 foreach ($entry in $allowed) {
     if (-not (Test-Path -LiteralPath (Join-Path $root $entry))) { Die "allowlisted entry missing: $entry" }
 }
@@ -212,7 +212,7 @@ import('node:fs').then(async (fs) => {
     if ($shippedPatch -notmatch 'id:\s*dsh-subagent-antigravity') { Die 'tarball patch lost the mount id' }
     Ok 'tarball patch keeps the mount id'
 
-    foreach ($entry in @('lib/index.js', 'lib/types/index.d.ts', 'PATCH.md', 'README.md', 'README.zh.md', 'LICENSE')) {
+    foreach ($entry in @('lib/index.js', 'lib/types/index.d.ts', 'README.md', 'README.zh.md', 'LICENSE')) {
         if (-not (Test-Path -LiteralPath (Join-Path $pkgRoot $entry))) { Die "tarball is missing $entry" }
     }
     Ok 'documentation and types included'

@@ -44,8 +44,7 @@ try {
   assert.match(text, /Hello from agy\./, `streamed text: ${text.slice(0, 300)}`)
   assert.equal(handle.tool?.(), 'write_file', 'tool name surfaces for the panel')
 
-  // The run must be visible to the tasks tool while it is live; here it has
-  // already settled, so the assertion is that it is no longer listed.
+  // The tasks tool tracks live runs only; here it has settled.
   assert.equal(provider.listActive().length, 0, 'settled run is released')
 
   const records = boot.taskRegistry()

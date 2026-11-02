@@ -221,8 +221,9 @@ export class UsageReader {
   private writeCache(report: UsageReport): void {
     try {
       mkdirSync(dirname(this.cachePath), { recursive: true })
-      // A per-process temp name: two writers sharing one `${path}.tmp` would
-      // interleave (A writes, B overwrites, A renames B's bytes into place).
+      // Keep this read→write→rename sequence synchronous: that is what makes
+      // concurrent callers safe, because Node cannot switch tasks inside a sync
+      // block. Converting it to `fs.promises` requires a write queue first.
       const temp = `${this.cachePath}.${process.pid}.tmp`
       const snapshot: CachedSnapshot = { rows: report.rows, fetchedAt: report.fetchedAt }
       writeFileSync(temp, JSON.stringify(snapshot), 'utf8')

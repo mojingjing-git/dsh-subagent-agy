@@ -52,21 +52,56 @@ function truncate(text: string, max: number): string {
   return `${text.slice(0, max)}…(+${text.length - max} chars)`
 }
 
+/**
+ * Keys agy's write/edit tools have used for their target path.
+ *
+ * Declared above `normalizeStep` on purpose: that function reads them, and a
+ * `const` referenced across 240 lines of hoisting is a TDZ waiting to happen.
+ */
+const TARGET_PATH_KEYS = ['TargetFile', 'target_file', 'AbsolutePath', 'absolute_path', 'file_path', 'filePath', 'path', 'Path']
+
+/** The path a write/edit tool aimed at, when the step carries one. */
+function targetPath(parameters: Record<string, unknown> | null): string | null {
+  if (parameters === null) return null
+  for (const key of TARGET_PATH_KEYS) {
+    const value = parameters[key]
+    if (typeof value === 'string' && value.trim().length > 0) return value.trim()
+  }
+  // A build that renames its arguments: fall back to the first value that looks
+  // like a file path (a separator plus a short extension).
+  for (const value of Object.values(parameters)) {
+    if (typeof value !== 'string') continue
+    const trimmed = value.trim()
+    if (/[\\/]/.test(trimmed) && /\.[A-Za-z0-9]{1,8}$/.test(trimmed) && !trimmed.includes('\n')) return trimmed
+  }
+  return null
+}
+
 /** Keep one step within the bounds above. */
 function normalizeStep(step: StepEvent): StepEvent {
   const parameters = step.tool?.parameters ?? null
   let tool = step.tool
-  if (tool !== null && parameters !== null) {
+  // Already normalized: re-wrapping the preview in a second preview would grow
+  // the payload past the cap again and change a preview the panel already shows.
+  const alreadyTruncated = parameters !== null && parameters.truncated === true
+  if (tool !== null && parameters !== null && !alreadyTruncated) {
+    // Capture the target path BEFORE the truncation below replaces the whole
+    // parameters object: a write tool's `file_path` lives in exactly the object
+    // that gets dropped, and the `[agy] N files changed` summary is built from
+    // it. Without this, every non-trivial edit reports zero files.
+    const target = targetPath(parameters)
+    const withTarget: StepTool = target !== null ? { ...tool, targetPath: target } : tool
     const serialized = JSON.stringify(parameters)
-    if (serialized.length > MAX_TOOL_PARAM_TEXT) {
-      tool = {
-        ...tool,
-        parameters: {
-          truncated: true,
-          preview: truncate(serialized, MAX_TOOL_PARAM_TEXT),
-        },
-      }
-    }
+    tool =
+      serialized.length > MAX_TOOL_PARAM_TEXT
+        ? {
+            ...withTarget,
+            parameters: {
+              truncated: true,
+              preview: truncate(serialized, MAX_TOOL_PARAM_TEXT),
+            },
+          }
+        : withTarget
   }
   return { ...step, text: truncate(step.text, MAX_STEP_TEXT), tool }
 }
@@ -78,6 +113,12 @@ export interface StepTool {
   parameters: Record<string, unknown> | null
   /** The tool's own error message, when the call failed. */
   error: string | null
+  /**
+   * The path this tool aimed at, captured before `parameters` was truncated.
+   * A write tool's `file_path` is short, but it lives inside the object whose
+   * serialization blows past the cap, so truncation would otherwise lose it.
+   */
+  targetPath?: string
 }
 
 /** One step of one run. */
@@ -199,6 +240,7 @@ export function parseStepUpdate(payload: unknown): StepEvent | undefined {
 export function mergeStep(existing: StepEvent, incoming: StepEvent): StepEvent {
   const existingRank = STATE_RANK[existing.state] ?? 0
   const incomingRank = STATE_RANK[incoming.state] ?? 0
+  const mergedTarget = incoming.tool?.targetPath ?? existing.tool?.targetPath
   const tool = existing.tool === null
     ? incoming.tool
     : incoming.tool === null
@@ -207,6 +249,9 @@ export function mergeStep(existing: StepEvent, incoming: StepEvent): StepEvent {
         name: incoming.tool.name.length > 0 ? incoming.tool.name : existing.tool.name,
         parameters: incoming.tool.parameters ?? existing.tool.parameters,
         error: incoming.tool.error ?? existing.tool.error,
+        // A write tool reports ACTIVE with its arguments and DONE without them;
+        // dropping the captured path here would lose it on the second event.
+        ...(mergedTarget !== undefined ? { targetPath: mergedTarget } : {}),
       }
   return {
     index: existing.index,
@@ -276,26 +321,6 @@ const FILE_WRITE_TOOLS = new Set([
   'edit_file',
 ])
 
-/** Keys agy's write/edit tools have used for their target path. */
-const TARGET_PATH_KEYS = ['TargetFile', 'target_file', 'AbsolutePath', 'absolute_path', 'file_path', 'filePath', 'path', 'Path']
-
-/** The path a write/edit tool aimed at, when the step carries one. */
-function targetPath(parameters: Record<string, unknown> | null): string | null {
-  if (parameters === null) return null
-  for (const key of TARGET_PATH_KEYS) {
-    const value = parameters[key]
-    if (typeof value === 'string' && value.trim().length > 0) return value.trim()
-  }
-  // A build that renames its arguments: fall back to the first value that looks
-  // like a file path (a separator plus a short extension).
-  for (const value of Object.values(parameters)) {
-    if (typeof value !== 'string') continue
-    const trimmed = value.trim()
-    if (/[\\/]/.test(trimmed) && /\.[A-Za-z0-9]{1,8}$/.test(trimmed) && !trimmed.includes('\n')) return trimmed
-  }
-  return null
-}
-
 /**
  * The files a run changed, in the order agy touched them, de-duplicated.
  *
@@ -307,7 +332,9 @@ export function filesTouched(steps: readonly StepEvent[]): string[] {
   const out: string[] = []
   for (const step of steps) {
     if (step.tool === null || !FILE_WRITE_TOOLS.has(step.tool.name)) continue
-    const path = targetPath(step.tool.parameters)
+    // Prefer the path captured before truncation: once the parameters were
+    // replaced by `{truncated, preview}`, none of the keys below exist any more.
+    const path = step.tool.targetPath ?? targetPath(step.tool.parameters)
     if (path === null) continue
     const key = path.toLowerCase()
     if (seen.has(key)) continue

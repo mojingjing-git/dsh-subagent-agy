@@ -19,6 +19,8 @@ export interface ConversationItem {
     stepCount: number;
     /** One line of the conversation's last exchange. */
     preview: string | null;
+    /** True when the user hid it and `includeHidden` asked to see it anyway. */
+    hidden?: boolean;
 }
 export interface ListConversationsOptions {
     records: Record<string, TaskRecord>;
@@ -28,6 +30,8 @@ export interface ListConversationsOptions {
     annotationsDir: string;
     /** Conversation ids (or registry keys) the user hid from the panel. */
     hidden?: readonly string[];
+    /** Return hidden conversations too (flagged `hidden: true`) instead of dropping them. */
+    includeHidden?: boolean;
     /** What agy knows about the conversations, keyed by conversation id. */
     summaries?: ReadonlyMap<string, ConversationSummary>;
     limit?: number;

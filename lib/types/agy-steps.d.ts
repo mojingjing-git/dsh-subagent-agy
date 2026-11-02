@@ -39,6 +39,12 @@ export interface StepTool {
     parameters: Record<string, unknown> | null;
     /** The tool's own error message, when the call failed. */
     error: string | null;
+    /**
+     * The path this tool aimed at, captured before `parameters` was truncated.
+     * A write tool's `file_path` is short, but it lives inside the object whose
+     * serialization blows past the cap, so truncation would otherwise lose it.
+     */
+    targetPath?: string;
 }
 /** One step of one run. */
 export interface StepEvent {

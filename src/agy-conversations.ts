@@ -40,6 +40,8 @@ export interface ConversationItem {
   stepCount: number
   /** One line of the conversation's last exchange. */
   preview: string | null
+  /** True when the user hid it and `includeHidden` asked to see it anyway. */
+  hidden?: boolean
 }
 
 export interface ListConversationsOptions {
@@ -50,6 +52,8 @@ export interface ListConversationsOptions {
   annotationsDir: string
   /** Conversation ids (or registry keys) the user hid from the panel. */
   hidden?: readonly string[]
+  /** Return hidden conversations too (flagged `hidden: true`) instead of dropping them. */
+  includeHidden?: boolean
   /** What agy knows about the conversations, keyed by conversation id. */
   summaries?: ReadonlyMap<string, ConversationSummary>
   limit?: number
@@ -115,12 +119,14 @@ export function titleFromAnnotations(annotationsDir: string, conversationId: str
  */
 export function listConversations(options: ListConversationsOptions): ConversationItem[] {
   const hidden = new Set(options.hidden ?? [])
+  const includeHidden = options.includeHidden === true
   const summaries = options.summaries
   const byConversation = new Map<string, ConversationItem>()
 
   for (const [key, record] of Object.entries(options.records)) {
     const conversationId = record.conversationId
-    if (hidden.has(key) || hidden.has(conversationId)) continue
+    const isHidden = hidden.has(key) || hidden.has(conversationId)
+    if (isHidden && !includeHidden) continue
     if (!isSafeConversationId(conversationId)) continue
     // Admission test: a real agy conversation has a database on disk.
     if (!existsSync(join(options.conversationsDir, `${conversationId}.db`))) continue
@@ -145,6 +151,7 @@ export function listConversations(options: ListConversationsOptions): Conversati
       status: summary?.status ?? null,
       stepCount: summary?.stepCount ?? 0,
       preview: summary?.preview ?? null,
+      ...(isHidden ? { hidden: true } : {}),
     }
 
     const previous = byConversation.get(conversationId)

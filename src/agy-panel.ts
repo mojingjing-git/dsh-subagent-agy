@@ -359,8 +359,11 @@ function readPrefs(path: string): { hidden: string[] } {
 
 function writePrefs(path: string, prefs: { hidden: string[] }): void {
   mkdirSync(dirname(path), { recursive: true })
-  // A per-process temp name: two writers sharing one `${path}.tmp` would
-  // interleave (A writes, B overwrites, A renames B's bytes into place).
+  // Keep this read→write→rename sequence synchronous: that is what makes
+  // concurrent callers safe, because Node cannot switch tasks inside a sync
+  // block. The pid only separates processes — two async callers in the same
+  // process would still collide, so converting this to `fs.promises` requires
+  // a write queue first.
   const temp = `${path}.${process.pid}.tmp`
   writeFileSync(temp, JSON.stringify(prefs), 'utf8')
   renameSync(temp, path)
@@ -405,8 +408,11 @@ export function registerAgyPanel(ctx: Context, deps: AgyPanelDeps): void {
       }
     }),
 
-    jsonRoute('/api-agy/conversations', async () => {
+    jsonRoute('/api-agy/conversations', async ({ body }) => {
       const prefs = readPrefs(deps.prefsPath)
+      // Hidden conversations are dropped by default; the panel asks for them
+      // back (flagged) only when the user opens the "show hidden" toggle.
+      const includeHidden = (body as { includeHidden?: unknown } | undefined)?.includeHidden === true
       let items: ConversationItem[] = []
       try {
         // The summary table knows when a conversation changed last; the
@@ -417,12 +423,13 @@ export function registerAgyPanel(ctx: Context, deps: AgyPanelDeps): void {
           conversationsDir: deps.conversationsDir,
           annotationsDir: deps.annotationsDir,
           hidden: prefs.hidden,
+          includeHidden,
           summaries,
         })
       } catch (error) {
         logger.warn(`dsh-subagent-antigravity: conversation list failed: ${String(error)}`)
       }
-      return ok({ items })
+      return ok({ items, hiddenCount: prefs.hidden.length })
     }),
 
     jsonRoute('/api-agy/running', () => {

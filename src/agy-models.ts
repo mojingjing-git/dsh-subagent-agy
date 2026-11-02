@@ -134,6 +134,9 @@ export function readModelCatalog(file: string): ModelCatalog | undefined {
 /** Atomically replace the cache: a half-written file must never be read back. */
 export function writeModelCatalog(file: string, catalog: ModelCatalog): void {
   mkdirSync(dirname(file), { recursive: true })
+  // Keep this write→rename synchronous: Node cannot switch tasks inside a sync
+  // block, which is what makes concurrent callers safe. Converting it to
+  // `fs.promises` would require a write queue first.
   const temporary = `${file}.${process.pid}.tmp`
   writeFileSync(temporary, `${JSON.stringify(catalog, null, 2)}\n`, 'utf8')
   renameSync(temporary, file)

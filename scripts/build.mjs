@@ -107,8 +107,8 @@ if (existsSync(clientSrc)) {
 
   // Evaluate the copied bundle the way the web loader does: as a classic script,
   // with no `module` / `exports` / `require`. A bundle missing its CommonJS
-  // shell must fail here, not on the next DSH boot — patched.9 shipped exactly
-  // that white screen (`web boot: 1 entry did not activate`).
+  // shell must fail here, not on the next DSH boot, where it surfaces only as
+  // `web boot: 1 entry did not activate` and a blank sidebar.
   let captured
   try {
     runInNewContext(

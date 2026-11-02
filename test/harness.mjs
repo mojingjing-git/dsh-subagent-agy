@@ -132,9 +132,8 @@ export async function bootPlugin(overrides = {}, options = {}) {
       // Real `dsh-jobs-local.start()` runs `spec.owner` through
       // `resolveOwner()`, which resolves it as a *session id*:
       //   `agents.get(session)` -> throw `session "[object Object]" has no live agent`
-      // when handed an Agent object. This stub used to accept anything, so the
-      // plugin's `owner: parent` shipped green offline and failed on the first
-      // real `background: true` call. Reproduce the real check here.
+      // when handed an Agent object. Reproducing the real check here is what
+      // keeps a wrong owner type from passing offline.
       if (spec.owner !== undefined) {
         if (typeof spec.owner !== 'string') {
           throw new Error(
@@ -196,7 +195,7 @@ export async function bootPlugin(overrides = {}, options = {}) {
           // ring when the producer settles, so `readOutput` after `wait` returns
           // everything the producer buffered. Without this drain the buffered
           // text never reaches the ring and post-settlement reads come back
-          // empty — the failure mode this stub used to exhibit.
+          // empty.
           if (typeof hooks.readOutput === 'function') {
             try {
               const rest = hooks.readOutput()

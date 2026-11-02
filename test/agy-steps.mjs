@@ -171,7 +171,30 @@ check('snapshotSteps keeps a truncated tool preview stable', () => {
   const big = parseStepUpdate({ step_index: 1, state: 'DONE', step_type: 'tool', tool_name: 'run_command', tool_info: { name: 'run_command', parameters: { Command: 'y'.repeat(3000) } } })
   const first = snapshotSteps(mergeStepInto([], big))
   const second = snapshotSteps(first)
-  assert.equal(second[0].tool.preview, first[0].tool.preview)
+  assert.equal(second[0].tool.parameters.preview, first[0].tool.parameters.preview)
+})
+
+check('a truncated write keeps its target path for the files-changed summary', () => {
+  const steps = mergeStepInto([], parseStepUpdate({
+    step_index: 1, state: 'DONE', step_type: 'tool', tool_name: 'write_to_file',
+    tool_info: { name: 'write_to_file', parameters: { TargetFile: 'src/big.ts', CodeContent: 'x'.repeat(4096) } },
+  }))
+  // Parameters past the cap are replaced by {truncated, preview}…
+  assert.equal(steps[0].tool.parameters.truncated, true)
+  // …but the path was captured before that, so the summary still names the file.
+  assert.equal(steps[0].tool.targetPath, 'src/big.ts')
+  assert.deepEqual(filesTouched(steps), ['src/big.ts'])
+})
+
+check('a later DONE event keeps the target path captured on ACTIVE', () => {
+  const active = mergeStepInto([], parseStepUpdate({
+    step_index: 7, state: 'ACTIVE', step_type: 'tool', tool_name: 'write_to_file',
+    tool_info: { name: 'write_to_file', parameters: { file_path: 'src/merged.ts', Content: 'y'.repeat(4096) } },
+  }))
+  assert.equal(active[0].tool.targetPath, 'src/merged.ts')
+  const merged = mergeStepInto(active, parseStepUpdate({ step_index: 7, state: 'DONE', step_type: 'tool' }))
+  assert.equal(merged[0].tool.targetPath, 'src/merged.ts')
+  assert.deepEqual(filesTouched(merged), ['src/merged.ts'])
 })
 
 check('filesTouched lists the files write/edit steps targeted, in order', () => {

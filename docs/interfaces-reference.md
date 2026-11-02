@@ -37,7 +37,7 @@ Delegate a self-contained task to Google Antigravity CLI (agy) — a separate Ge
   task: string,           // task key for resuming
   conversationId?: string, // agy conversation id, included when available
   label?: string,         // human-readable label from the registry
-  output: string          // final answer + [agy] summary line
+  output: ContentBlock[]  // final answer + [agy] summary line; render with outputValueText()
 }
 ```
 
@@ -58,9 +58,9 @@ Delegate a self-contained task to Google Antigravity CLI (agy) — a separate Ge
 
 ---
 
-## 2. `antigravity_followup` — resume a conversation (alias)
+## 2. `antigravity_followup` — resume a conversation (foreground shortcut)
 
-Kept as an alias of `antigravity(task: ...)`. **All three parameters are required.**
+A convenience shortcut for the **foreground** case of `antigravity(task: ...)`. **All three parameters are required.**
 
 | Name | Type | Required | Description |
 |---|---|---|---|
@@ -68,7 +68,7 @@ Kept as an alias of `antigravity(task: ...)`. **All three parameters are require
 | `task` | string | ✅ | The task key returned by the earlier `antigravity` call. Looked up in the registry to restore `conversationId` and `cwd`. |
 | `prompt` | string | ✅ | The follow-up instruction. The child remembers everything it did previously — state only what is new. |
 
-Internally delegates to the same handler as `antigravity`; returns the same foreground/background shape. **Recommended instead: use `antigravity(task: ..., prompt: ...)` directly.**
+Returns the **foreground** shape only. It accepts no `background`, `model`, `effort` or `dirs` argument; for a background resume, a per-call model/effort override, or extra workspace directories, call `antigravity({ task, prompt, ... })` directly.
 
 ### Resumption gate
 

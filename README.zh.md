@@ -10,8 +10,10 @@ agy 使用你的 Antigravity 登录态（系统凭据 / Google 登录）完成�
 >
 > **本项目是 fork。** 上游是 ZEM17 的 [ZEM17/dsh-subagent-agy](https://github.com/ZEM17/dsh-subagent-agy)
 > （`@dsh-external/dsh-subagent-antigravity@0.2.0`，MIT）。本 fork 增加了 DSH
-> 0.2.1-rc.2 兼容、每次运行的完整轨迹、agy 1.4.x 支持、侧边栏面板，以及下方描述的
-> 测试套件——全部改动及原因见 [PATCH.md](PATCH.md)。当前版本 `0.2.0-patched.13`。
+> 0.2.1 兼容、每次运行的完整轨迹、新版 agy 支持、侧边栏面板，以及下方描述的
+> 测试套件。挂载 id 保持不变，因此可以直接替换上游版本。
+
+维护文档在 [docs/](docs/README.md)。
 
 ---
 
@@ -37,11 +39,13 @@ dsh plugin --profile web add github:mojingjing-git/dsh-subagent-agy
 
 **从安装包安装**：到
 [Releases 页面](https://github.com/mojingjing-git/dsh-subagent-agy/releases) 下载
-`dsh-external-dsh-subagent-antigravity-0.2.0-patched.13.tgz`，然后：
+`dsh-external-dsh-subagent-antigravity-<version>.tgz`，然后：
 
 ```bash
-dsh plugin --profile web add /path/to/dsh-external-dsh-subagent-antigravity-0.2.0-patched.13.tgz
+dsh plugin --profile web add /path/to/dsh-external-dsh-subagent-antigravity-<version>.tgz
 ```
+
+把 `<version>` 换成你下载的版本——当前版本号见 [`package.json`](package.json)。
 
 工具装完即用（任何会话里的模型都能调用 `antigravity` 系列）。**侧边栏面板是
 web client 扩展，需要重启一次 DSH 才会出现**；升级安装包后同样要重启，
@@ -56,7 +60,7 @@ web client 扩展，需要重启一次 DSH 才会出现**；升级安装包后�
 | 用途 | 工具 | 说明 |
 |---|---|---|
 | 派任务 / 续聊 | `antigravity` | 新任务直接给 `prompt`；带 `task` 键则续聊同一对话（上下文完整延续），两种用法都支持 `background: true` |
-| 续聊（旧名） | `antigravity_followup` | `antigravity({ task, prompt })` 的别名，保留向后兼容 |
+| 续聊（前台） | `antigravity_followup` | `antigravity({ task, prompt })` 的前台快捷方式；要后台/`model`/`effort`/`dirs` 请直接用后者 |
 | 任务列表 | `antigravity_tasks` | 列出运行中 + 最近完成的任务；`task` 键在 DSH 重启后仍然有效 |
 | 取消任务 | `antigravity_cancel` | 用 `task` 键停止一个运行中的任务（终止 agy 进程树） |
 | 登录 | `antigravity_login` | 弹出 agy 交互式登录窗口（认证失败时也会自动弹出） |
@@ -100,7 +104,7 @@ Manager** 标签页：
 
 - **四张额度卡**：直接取 `agy --print "/usage"` 的输出，按「Gemini Models /
   Claude and GPT models」× 「五小时 / 每周」排列，带重置时间。一次查询约 10 秒，
-  所以结果缓存 5 分钟（单飞，多个面板不会各拉起一个 agy）；卡片上的「刷新额度」
+  所以结果会短暂缓存（单飞，多个面板不会各拉起一个 agy）；卡片上的「刷新额度」
   可强制刷新，卡片下方标着这组数**什么时候读到的**（查询本身要十秒，数字不新时
   一眼能看出来）。
 - **Token 消耗（额度估算用）**：额度卡下面多一张「Token 消耗」卡，把机器上**所有**
@@ -112,21 +116,19 @@ Manager** 标签页：
   口径说明：transcript 里的计数是**单步增量**（输入会随着缓存命中从两万掉到两千、
   差额记进 cache），所以直接相加是对的；缓存读按折扣计费，但在「总共搬了多少
   token」这件事上它是主体，因此算进总数、同时单列。磁盘上的历史受 agy 自己的保留
-  策略限制（当前约一周），所以「本地总计」标的是能读到的范围，不是账号历史。
+  策略限制，所以「本地总计」标的是能读到的范围，不是账号历史。
   统计是只读扫描 + 按 (mtime, size) 的增量缓存，150 个会话冷扫几百毫秒，之后每次
   只读新写的文件。
 - **会话列表**：只列**经本插件跑过**的对话（`~/.dsh/agy-conversations.json`），
-  显示标题、时间、目录、模型与运行状态；插件自己的测试记录会被过滤掉。
+  显示标题、时间、目录、模型与运行状态。
 - **接着跑**：点某一行的「接着跑」，在行内输入新指令并发送，输出显示在面板**底部
   的独立输出区**（不挤占列表），逐字流式追加；可随时「停止」。同一会话的续跑是
   串行的，不会两条指令同时打进一个 agy 对话。
 - **步骤时间线**：点开会话后，列表上方显示这个会话**具体做了什么**——谁说了什么、
   模型调了哪个工具、传了什么参数、哪一步失败了。数据来自 agy 自己的
-  `~/.gemini/antigravity-cli/conversations/<id>.db`（`steps` 表按 `idx` 排序，
-  `gen_metadata` 存回复正文），所以**已经跑完**的会话也看得到步骤，不只是正在跑的
-  那些。agy 并非对每个会话都保存回复正文：工具调用和用户输入始终有，回复正文只
-  在部分会话里有，缺失时时间线会如实标注「该会话没有保存回复正文」，而不是显示
-  一个空气泡。
+  `~/.gemini/antigravity-cli/conversations/<id>.db`，所以**已经跑完**的会话也看得到
+  步骤，不只是正在跑的那些。agy 并非对每个会话都保存回复正文：工具调用和用户输入
+  始终有，回复正文只在部分会话里有，缺失时时间线会如实标注，而不是显示一个空气泡。
 - **每步的时间与 token**：时间线每一步左侧显示**这一步发生在几点几分**、右侧显示
   **这一步花了多少 token**（入 / 出）；时间线顶部是这个会话的**合计**。这些数字来自
   agy 自己的 transcript（`~/.gemini/antigravity-cli/brain/<id>/.system_generated/logs/transcript.jsonl`），
@@ -135,8 +137,7 @@ Manager** 标签页：
   的会话（agy 没写过 transcript）就只显示步骤，不显示时间和 token，而不是显示
   假的 0。缓存读取的 token 按折扣计费，因此**不计入输入**，合计里单列。
   同一个会话跑过多次时，agy 会在 transcript 里把每轮都记下来、每轮的步号从 0
-  重新开始；面板因此按文件里的顺序给步骤编号，并在**新一轮开始的地方画一条分隔
-  线**，不会把两次运行的第 3 步混成一步。
+  重新开始；因此每个步骤都带有自己所属的轮次，时间线在**新一轮开始处画一条标注轮次的分隔线**，不会把两次运行的第 3 步混成一步。
 
 面板读取的是本地注册表，所以 DSH 重启后历史会话仍可继续；agy 未安装或未登录时，
 额度区会显示空态而不是报错。
@@ -245,7 +246,7 @@ agy 在无 TTY 的 headless 模式下无法弹权限审批，**被拒的动作�
 | 任务卡在浏览器工具上 | `avoidBrowser`（默认开启）已阻止；确实需要浏览器预览时才设 `false` |
 | `file size (…) exceeds limit` | agy 读取工具上限 4 MB；`avoidLargeReads`（默认开启）已让 agy 改用 grep/sed——或瘦身该文件 |
 | 注册表损坏 | 插件会把损坏的文件备份一次到 `*.corrupt` 再重置注册表——历史记录绝不会被静默覆盖 |
-| 侧边栏没有 **Antigravity Manager** 按钮 | client 扩展只在启动时加载：重启 DSH；仍没有就确认安装的包里含 `lib/client.js`（`patched.9` 起） |
+| 侧边栏没有 **Antigravity Manager** 按钮 | client 扩展只在启动时加载：重启 DSH；仍没有就确认安装的包里含 `lib/client.js` |
 | 面板里额度一直「读取中」 | 首次探测 `agy /usage` 约 10 秒；超过 30 秒检查 `agy` 是否可执行、是否已登录 |
 | 面板会话列表为空 | 列表只含本插件跑过的会话；先用 `antigravity` 工具跑一次（注册表在 `~/.dsh/agy-conversations.json`） |
 
@@ -255,11 +256,14 @@ agy 在无 TTY 的 headless 模式下无法弹权限审批，**被拒的动作�
 
 ```bash
 npm run build        # tsc 编译 src/ → lib/，并复制、校验 client bundle
-npm test             # 113 条离线断言（模拟 agy）
-npm run test:panel   # 80 项检查：数据源、host 路由、流式续跑、client 契约、model: auto
+npm test             # 离线断言（模拟 agy）
+npm run test:panel   # 面板各套件：数据源、host 路由、流式续跑、client 契约
 npm run test:e2e     # 真实双轮对话（需要已登录 agy）
 npm run pack         # 打 tgz，供 `dsh plugin add`
 ```
+
+参见 [docs/development.md](docs/development.md) 了解每个命令覆盖什么、
+以及为什么打包是确定性的。每个套件自己打印通过数。
 
 本地 DSH 开发流程（超级模组注入器）：`dev_build_plugin`（构建+打包）→
 `dev_inject_plugin`（免重启运行时注入）；日常迭代用 `dev_build_plugin` →

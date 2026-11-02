@@ -3,7 +3,7 @@
 [![ci](https://github.com/mojingjing-git/dsh-subagent-agy/actions/workflows/ci.yml/badge.svg)](https://github.com/mojingjing-git/dsh-subagent-agy/actions/workflows/ci.yml)
 
 Delegate tasks to **Google Antigravity CLI (`agy`)** — a separate
-Gemini-powered coding agent on your machine — straight from DeepSeek Harness.
+Gemini-powered coding agent on your machine — straight from DeepSeekRuntime.
 **No Gemini API key is involved**: agy authenticates through your Antigravity
 login (system keyring / Google Sign-In).
 
@@ -11,9 +11,11 @@ login (system keyring / Google Sign-In).
 >
 > **This is a fork.** Upstream is [ZEM17/dsh-subagent-agy](https://github.com/ZEM17/dsh-subagent-agy)
 > by ZEM17 (`@dsh-external/dsh-subagent-antigravity@0.2.0`, MIT). This fork adds
-> DSH 0.2.1-rc.2 compatibility, per-run transcripts, agy 1.4.x support, the
-> sidebar panel and the test suites described below — see [PATCH.md](PATCH.md)
-> for every change and why. Version `0.2.0-patched.13`.
+> DSH 0.2.1 compatibility, per-run transcripts, current agy support, the sidebar
+> panel, and the test suites described below. The mount id is unchanged, so this
+> is a drop-in replacement for upstream.
+
+Maintenance documentation lives in [docs/](docs/README.md).
 
 ---
 
@@ -27,7 +29,7 @@ login (system keyring / Google Sign-In).
 2. **`agy` logged in once**: run `agy` in a terminal and complete the
    sign-in. If a run hits "authentication required", the plugin pops the
    interactive login window automatically.
-3. **DeepSeek Harness** with the standard web profile (it ships
+3. **DeepSeekRuntime** with the standard web profile (it ships
    `dsh-subagent`, `dsh-subprocess`, `dsh-tools`, `dsh-jobs`).
 
 ### Install the plugin
@@ -38,13 +40,16 @@ login (system keyring / Google Sign-In).
 dsh plugin --profile web add github:mojingjing-git/dsh-subagent-agy
 ```
 
-**From a tarball**: download
-`dsh-external-dsh-subagent-antigravity-0.2.0-patched.13.tgz` from the
+**From a tarball**: download a
+`dsh-external-dsh-subagent-antigravity-<version>.tgz` from the
 [releases page](https://github.com/mojingjing-git/dsh-subagent-agy/releases), then:
 
 ```bash
-dsh plugin --profile web add /path/to/dsh-external-dsh-subagent-antigravity-0.2.0-patched.13.tgz
+dsh plugin --profile web add /path/to/dsh-external-dsh-subagent-antigravity-<version>.tgz
 ```
+
+Substitute the version you downloaded — see
+[`package.json`](package.json) for the current one.
 
 The tools work right away — the model in any session can use the `antigravity`
 series. **The sidebar panel is a web-client extension and needs one DSH
@@ -61,7 +66,7 @@ prompt it explicitly:
 | Surface | Name | What it does |
 |---|---|---|
 | task / follow-up | `antigravity` | pass `prompt` for a fresh conversation, or `task` to continue one (full context carries over); both work with `background: true` |
-| follow-up (legacy) | `antigravity_followup` | alias of `antigravity({ task, prompt })`, kept for compatibility |
+| follow-up (foreground) | `antigravity_followup` | foreground-only shortcut for `antigravity({ task, prompt })`; use the latter for `background` / `model` / `effort` / `dirs` |
 | list | `antigravity_tasks` | list running tasks + recent finished tasks; `task` keys survive DSH restarts |
 | cancel | `antigravity_cancel` | stop a running task by its `task` key (agy process tree terminated) |
 | login | `antigravity_login` | pop the interactive agy login window (also opens automatically on auth failures) |
@@ -113,7 +118,7 @@ configured model** (hover for the reset time). Clicking it opens the
 
 - **Four quota cards**, taken straight from `agy --print "/usage"`: Gemini
   Models / Claude and GPT models × five-hour / weekly, each with its reset time.
-  One probe takes ~10 seconds, so the result is cached for five minutes
+  One probe takes ~10 seconds, so the result is cached briefly
   (single-flight — many open panes still spawn one agy); the card's refresh
   button forces a new probe, and the cards say **when** the numbers were read —
   the probe is slow, and stale numbers should be obvious at a glance.
@@ -130,14 +135,14 @@ configured model** (hover for the reset time). Clicking it opens the
   then drops to a few thousand with the rest recorded as cache reads once the
   prefix is cached), so summing is correct; cache reads are billed at a
   discount but are most of the volume, so they count towards the total and are
-  listed separately. The history on disk is bounded by agy's own retention
-  (~a week today), so the all-time line is "what is readable locally", not the
+  listed separately. The history on disk is bounded by agy's own retention,
+  so the all-time line is "what is readable locally", not the
   account's lifetime. The scan is read-only with an (mtime, size) index: a cold
   150-conversation scan takes a few hundred ms, later refreshes only read new
   files.
 - **Conversation list**: only conversations **this plugin** ran
   (`~/.dsh/agy-conversations.json`), with title, time, working directory, model
-  and run state. The plugin's own test records are filtered out.
+  and run state.
 - **Continue**: click "接着跑" on a row, type the next instruction inline and
   send. Output appears in a **separate area at the bottom of the panel** (it does
   not squeeze the list) and streams token by token; stop it at any time.
@@ -146,26 +151,22 @@ configured model** (hover for the reset time). Clicking it opens the
 - **Step timeline**: opening a conversation shows **what the model actually did**
   above the list — who said what, which tool ran with which arguments, which step
   failed. The timeline comes from agy's own
-  `~/.gemini/antigravity-cli/conversations/<id>.db` (`steps` ordered by `idx`,
-  reply bodies in `gen_metadata`), so **finished** conversations show their steps
-  too, not only the running ones. agy does not keep the reply body for every
-  conversation: tool calls and prompts are always there, reply bodies only for
-  some of them, and the timeline says so instead of showing an empty bubble.
+  `~/.gemini/antigravity-cli/conversations/<id>.db`, so **finished**
+  conversations show their steps too, not only the running ones. agy does not
+  keep the reply body for every conversation: tool calls and prompts are always
+  there, reply bodies only for some of them, and the timeline says so instead
+  of showing an empty bubble.
 - **Time and tokens per step**: every step shows the **time it happened** on the
   left and the **tokens it cost** (in / out) on the right; the top of the
-  timeline carries the **totals** for the conversation. Both come from agy's own
-  transcript
+  timeline carries the **totals** for the conversation. Time comes from agy's
+  own transcript
   (`~/.gemini/antigravity-cli/brain/<id>/.system_generated/logs/transcript.jsonl`),
-  where every line carries `created_at` and
-  `input_tokens / output_tokens / cache_read_tokens`. The database's step table
-  has no time column, so time and tokens can only come from the transcript — a
-  conversation without one shows its steps without times or tokens rather than
-  fake zeros. Cached reads are billed at a discount, so they are **not counted as
-  input**; the totals list them separately.
+  because the database's step table has no time column — a conversation without
+  a transcript shows its steps without times or tokens rather than fake zeros.
   A conversation agy ran more than once keeps every run in the transcript and
-  restarts its step numbers for each of them, so the panel numbers the steps
-  by their position in the file and draws a **divider where a new run starts** —
-  the third step of two different runs never becomes one step.
+  restarts its step numbers for each of them, so each step carries the run it
+  belongs to and the timeline draws a **divider labelled with the run** where a
+  new one starts — the third step of two different runs never becomes one step.
 
 The panel reads the local registry, so past conversations remain resumable after
 a DSH restart; when agy is missing or logged out the quota area shows an empty
@@ -175,8 +176,8 @@ state instead of an error.
 
 ## Configuration
 
-All fields are optional; sane defaults are shown. Configure through the
-plugin's settings section (e.g. `$DSH_HOME/settings.yaml`):
+All fields are optional; the defaults below are what the plugin ships with.
+Configure through the plugin's settings section (e.g. `$DSH_HOME/settings.yaml`):
 
 ```yaml
 dsh-subagent-antigravity:
@@ -222,6 +223,8 @@ dsh-subagent-antigravity:
 | `autoLoginWindow` | `true` | on auth failure, pop the interactive login window automatically |
 | `loginWindowMinimized` | `true` | launch the login window minimized (taskbar icon only) |
 
+Every field is described in [docs/configuration.md](docs/configuration.md).
+
 ---
 
 ## How it works (short version)
@@ -232,7 +235,7 @@ carries agy's `conversation_id`; the plugin records it in a durable registry
 (`~/.dsh/agy-conversations.json`), and `antigravity({ task })` resumes the
 same conversation via `--conversation <id>`. Background runs use
 `stream-json` for live progress and register with DSH's jobs system
-(`job_output` / `job_kill`). The job's owner is the calling agent, so a
+(`job_output` / `job_kill`). The job's owner is the calling session, so a
 settled job **wakes** it — the model is told not to poll. A local watchdog terminates hung runs, and all
 timeouts interrupt: nothing ever waits forever.
 
@@ -258,13 +261,17 @@ self-heals: a corrupted file is backed up once (`*.corrupt`) and reset
 instead of being silently overwritten, and all registry writes are
 serialized, so concurrent runs never lose each other's records.
 
-The sidebar panel is two halves: the host registers `/api-agy/*` JSON routes once
-the optional `webServer` service appears (usage, conversations, running,
-continue, cancel), and the client is a separate `lib/client.js` declared through
-`exports["./client"]` + `dsh.client`. "Continue" reuses the background pipeline:
+The sidebar panel is two halves: the host registers `/api-agy/*` JSON routes
+(usage, tokens, conversations, running, history, continue, run, cancel, prefs),
+and the client is a separate `lib/client.js` declared through
+`exports["./client"]`. "Continue" reuses the background pipeline:
 `--output-format stream-json` events are parsed once on the host and the pane
 polls a cursor, so closing the panel or reloading the page loses no output — the
 agy process keeps running on the host either way.
+
+Details: [docs/architecture.md](docs/architecture.md) ·
+[docs/agy-integration.md](docs/agy-integration.md) ·
+[docs/sidebar-panel.md](docs/sidebar-panel.md).
 
 ---
 
@@ -281,7 +288,7 @@ agy process keeps running on the host either way.
 | task hangs on a browser tool | `avoidBrowser` (default on) prevents it; set `false` only when a browser preview is genuinely needed |
 | `file size (…) exceeds limit` | agy's read tool caps at 4 MB; `avoidLargeReads` (default on) tells agy to use grep/sed instead — or slim the file |
 | registry corrupted | the plugin backs the damaged file up once to `*.corrupt` and restarts the registry fresh — history is never silently overwritten |
-| no `AGY` button in the sidebar | client extensions load at startup: restart DSH; if it persists check the installed package contains `lib/client.js` (`patched.9` and later) |
+| no **Antigravity Manager** button in the sidebar | client extensions load at startup: restart DSH; if it persists check the installed package contains `lib/client.js` |
 | quota stuck on "reading" | the first `agy /usage` probe takes ~10 s; past 30 s check that `agy` runs and is logged in |
 | conversation list is empty | it only lists runs of this plugin — run one `antigravity` task first (registry: `~/.dsh/agy-conversations.json`) |
 
@@ -291,11 +298,14 @@ agy process keeps running on the host either way.
 
 ```bash
 npm run build        # tsc src/ → lib/, then copy and verify the client bundle
-npm test             # 113 offline assertions against a simulated agy
-npm run test:panel   # 80 checks: data sources, host routes, stream, client contract, model: auto
+npm test             # offline suite against a simulated agy
+npm run test:panel   # panel suites: data sources, host routes, streaming, client contract
 npm run test:e2e     # live round trip and follow-up (needs an agy login)
 npm run pack         # tarball for `dsh plugin add`
 ```
+
+See [docs/development.md](docs/development.md) for what each one covers and why
+the packaging is deterministic. Each suite prints its own tally.
 
 Dev workflow on a local DSH (super-injector): `dev_build_plugin` (build +
 pack) → `dev_inject_plugin` (runtime injection, no restart); iterate with

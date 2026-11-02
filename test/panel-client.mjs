@@ -44,8 +44,9 @@ const fakeReact = {
 
 // DSH's web loader evaluates the bundle as a classic script: `window` and
 // `fetch` exist, `module`/`exports`/`require` do NOT. Evaluating in a bare VM
-// context reproduces that exactly — the patched.9 white screen was `module is not
-// defined`, which this test could not see while it injected a fake `module`.
+// context reproduces that exactly — missing CommonJS globals surface as
+// `module is not defined`, which this test cannot see if it injects a fake
+// `module`.
 runInNewContext(
   source,
   {
@@ -126,8 +127,7 @@ check('every client endpoint exists on the host', () => {
 })
 
 check('selecting a conversation loads its step timeline', () => {
-  // The panel used to show nothing but the title: the client never asked for
-  // the history and never rendered a timeline.
+  // The timeline only exists if the client asks for it and renders it.
   assert.ok(source.includes("post('/history'"), 'the client never reads /history')
   assert.ok(source.includes('HistoryTimeline'), 'the timeline component is missing')
   assert.ok(source.includes('loadHistory(id)'), 'selecting a conversation does not load its history')
