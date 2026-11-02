@@ -46,7 +46,16 @@ jobs:
         # lib/ is committed so the suites exercise the artifact that ships. A
         # diff here means src changed without rebuilding — fail instead of
         # letting every later step "pass" against stale output.
-        run: git diff --exit-code -- lib/
+        #
+        # `lib/types/index.d.ts` is excluded, and only it. A local DSH install
+        # ships no peer .d.ts files, so the build there goes through the
+        # src/peers.d.ts shim and emits declarations with no peer type imports;
+        # a clean clone (this runner) has the real declarations and emits them.
+        # Both are correct for their environment, so those two files can never
+        # be byte-identical. Every runtime artifact (.js and .js.map) is still
+        # compared, which is what "src changed without rebuilding" actually
+        # means; the declaration difference cannot affect behaviour.
+        run: git diff --exit-code -- lib/ ':(exclude)lib/types/index.d.ts'
 
       - name: Offline suite
         run: node test/run.mjs
