@@ -7,6 +7,7 @@
  */
 import { existsSync, mkdirSync, readFileSync, readdirSync, writeFileSync } from 'node:fs'
 import { isAbsolute, join, resolve } from 'node:path'
+import { tmpdir } from 'node:os'
 import { bootPlugin, cleanup, homeTranscriptDir, readIfExists, scratch } from './harness.mjs'
 
 const filter = process.argv[2]
@@ -313,8 +314,8 @@ await testCase('hang/timeout-settles', { scenario: 'hang', config: { printTimeou
   }
   const elapsed = Date.now() - started
   check('a hung run times out instead of hanging the tool', threw !== undefined, String(threw?.message ?? 'resolved'))
-  // Regression guard: the timeout path used to hit a TDZ ReferenceError on
-  // transcriptPath, which surfaced as "Cannot access 'transcriptPath'".
+  // The timeout path must not hit a TDZ ReferenceError on transcriptPath,
+  // which surfaces as "Cannot access 'transcriptPath'".
   check('timeout does not throw the TDZ error', !/Cannot access 'transcriptPath'/.test(String(threw?.message ?? '')), String(threw?.message))
   check('timeout message mentions the ceiling', /did not finish within/i.test(String(threw?.message ?? '')), String(threw?.message))
   // 1200 ms ceiling + the 5000 ms minimum watchdog margin + slack.
@@ -444,9 +445,8 @@ await testCase('probe/caches-and-reuses', { scenario: 'success' }, async (ctl) =
 
 await testCase('flags/stream-mode-agrees-across-executors', { scenario: 'success', config: { model: 'gemini-3.8-flash-high' } }, async (ctl) => {
   // A build whose help cannot confirm stream-json (minimal usage → probed=false,
-  // streamJson=false). Both executors must then fall back to plain `json`; the
-  // background path used to guess `streamJson || !probed` and pick stream-json
-  // while the foreground stayed strict — one build, two different protocols.
+  // streamJson=false). Both executors must fall back to plain `json`, so one
+  // installed build always gets one protocol.
   process.env.FAKE_AGY_MINIMAL_HELP = '1'
   try {
     const outputFormatOf = (h) => {
@@ -550,9 +550,12 @@ await testCase('tool/description-required-for-new-task', { scenario: 'success' }
 })
 
 // ── 11. Background path ─────────────────────────────────────────────────────
-await testCase('background/job-reads-output', { scenario: 'tool-then-answer' }, async (ctl) => {
+await testCase('background/job-reads-output', { scenario: 'tool-then-answer' }, async (ctl, { transcriptDir }) => {
   const value = await ctl.callTool('antigravity', { description: 'bg task', prompt: 'work in background', background: true })
   check('background returns a job id', value.kind === 'background' && typeof value.jobId === 'string', JSON.stringify(value))
+  // The task key is what a follow-up needs; it used to be omitted entirely,
+  // leaving the caller no way to resume the run it had just started.
+  check('background returns the task key', typeof value.task === 'string' && value.task.length > 0, JSON.stringify(value))
   // Real ids are `${kind}-${16 hex}`, not an opaque counter.
   check('job id follows the jobs-local shape', /^antigravity-[0-9a-f]{16}$/.test(value.jobId), value.jobId)
   const settled = await ctl.jobsService.wait(value.jobId, 15_000)
@@ -562,6 +565,10 @@ await testCase('background/job-reads-output', { scenario: 'tool-then-answer' }, 
   const out = ctl.jobsService.readOutput(value.jobId)
   check('background output contains the answer', out.includes('Hello from agy.'), `len=${out.length} ${out.slice(0, 300)}`)
   check('background output carries the task line', /\[task: /.test(out), out.slice(-200))
+  // `transcript: true` promises a record for every run, not just foreground ones.
+  const bgTranscriptPath = transcriptPathOf(transcriptDir, value.task)
+  check('a background run writes its transcript', typeof bgTranscriptPath === 'string' && bgTranscriptPath.length > 0, String(bgTranscriptPath))
+  check('the background transcript carries the event stream', transcriptOf(transcriptDir, value.task).length > 1, `lines=${transcriptOf(transcriptDir, value.task).length}`)
 })
 
 await testCase('background/resume-by-task', { scenario: 'success' }, async (ctl) => {
@@ -570,6 +577,58 @@ await testCase('background/resume-by-task', { scenario: 'success' }, async (ctl)
   check('a resume can run in the background', value.kind === 'background' && typeof value.jobId === 'string', JSON.stringify(value))
   const settled = await ctl.jobsService.wait(value.jobId, 15_000)
   check('a resumed background job completes', settled?.status === 'completed', JSON.stringify(settled))
+})
+
+await testCase('background/keeps-config-add-dirs', { scenario: 'success', config: { addDirs: [tmpdir()] } }, async (ctl) => {
+  const value = await ctl.callTool('antigravity', { description: 'bg dirs', prompt: 'work', background: true })
+  await ctl.jobsService.wait(value.jobId, 15_000)
+  // A configured workspace dir must survive the background entry point too;
+  // otherwise headless agy hangs on the interactive add-directory prompt.
+  const withAddDir = ctl.subprocess.spawned.filter((h) => h.argv.includes('--add-dir'))
+  check('a background run passes the configured --add-dir', withAddDir.length > 0, JSON.stringify(ctl.subprocess.spawned.map((h) => h.argv).slice(0, 3)))
+  check('the configured directory is the one passed', withAddDir.some((h) => h.argv.includes(tmpdir())), withAddDir.map((h) => h.argv).join(' | '))
+})
+
+await testCase('cancel/unknown-task-answers-false', { scenario: 'success' }, async (ctl) => {
+  const value = await ctl.callTool('antigravity_cancel', { task: 'no-such-task' })
+  // The documented contract is `cancelled: boolean`, and the tasks tool lists
+  // finished tasks too — so this must answer, not throw.
+  check('cancelling an unknown task answers cancelled:false instead of throwing', value.cancelled === false, JSON.stringify(value))
+  check('the message explains why nothing was cancelled', /no running task/i.test(String(value.message)), String(value.message))
+})
+
+await testCase('tool/task-bracket-form-resumes', { scenario: 'success' }, async (ctl) => {
+  const first = await ctl.callTool('antigravity', { description: 'seed', prompt: 'Reply with exactly: PONG' })
+  // Tool descriptions invite `[task: ...]`; the handler must accept that form.
+  const resumed = await ctl.callTool('antigravity', { prompt: 'and again', task: `[task: ${first.task}]` })
+  check('the [task: ...] line resolves to the same task', resumed.task === first.task, JSON.stringify(resumed))
+})
+
+await testCase('background/exit-1-settles-failed', { scenario: 'exit-1' }, async (ctl) => {
+  const value = await ctl.callTool('antigravity', { description: 'bg fail', prompt: 'fail', background: true })
+  const settled = await ctl.jobsService.wait(value.jobId, 15_000)
+  // A non-zero exit produces no SUCCESS result. This used to be reported as
+  // `completed`, so the job and the panel both claimed a failed run succeeded.
+  check('a background run that exits non-zero settles as failed, not completed', settled?.status === 'failed', JSON.stringify(settled))
+  check('the failure detail carries the exit code or stderr', /exit|boom/i.test(String(settled?.detail ?? '')), String(settled?.detail))
+})
+
+await testCase('foreground/auto-promote-after-delay', { scenario: 'slow-stream', config: { foregroundPromoteMs: 300 } }, async (ctl) => {
+  const value = await ctl.callTool('antigravity', { description: 'slow foreground', prompt: 'slow work' })
+  // A call the model expected to be quick must not hold the session for minutes.
+  check('a slow foreground call is moved to a background job', value.kind === 'background' && typeof value.jobId === 'string', JSON.stringify(value))
+  check('the promoted result carries the task key', typeof value.task === 'string' && value.task.length > 0, JSON.stringify(value))
+  check('the promoted result explains why it moved', /background/i.test(String(value.note ?? '')), String(value.note))
+  const settled = await ctl.jobsService.wait(value.jobId, 15_000)
+  check('the promoted job still settles', settled?.status === 'completed', JSON.stringify(settled))
+  const out = ctl.jobsService.readOutput(value.jobId)
+  check('the promoted job adopted the live output', out.length > 0, `len=${out.length}`)
+})
+
+await testCase('foreground/promote-disabled-blocks', { scenario: 'slow-stream', config: { foregroundPromoteMs: 0 } }, async (ctl) => {
+  const value = await ctl.callTool('antigravity', { description: 'slow foreground', prompt: 'slow work' })
+  // 0 disables the feature: the call must behave exactly as it did before.
+  check('with foregroundPromoteMs=0 the call stays foreground', value.kind === 'foreground', JSON.stringify(value).slice(0, 160))
 })
 
 await testCase('background/cancel', { scenario: 'slow-stream' }, async (ctl) => {
@@ -599,7 +658,7 @@ await testCase('wake/owner-is-the-exec-agents-session-id', { scenario: 'success'
   // dsh-jobs-local resolves the owner with `agents.get(session)`, so the value
   // must be the session id STRING. Handing it the Agent object throws
   // `session "[object Object]" has no live agent` and every background call
-  // fails — which is exactly what shipped in patched.6.
+  // fails.
   check('owner is a session id string', typeof owners[0] === 'string', `${typeof owners[0]}: ${JSON.stringify(owners[0])}`)
   check('owner is this session', owners[0] === 'test-session', String(owners[0]))
   check('owner is not the exec agent object', owners[0] !== ctl.lastToolAgent, 'owner is the Agent object, not its id')
@@ -649,10 +708,10 @@ await testCase('dispose/terminates-active-runs', { scenario: 'hang', config: { p
 })
 
 // ── 16. Tool output schemas are closed and satisfied ──────────────────────
-// Regression guard for a live-only failure: every tool declares
-// `additionalProperties: false`, so a field added to a result without a matching
-// declaration makes DSH discard an otherwise successful tool call. The offline
-// suite missed it because the harness used to call `tool.execute()` directly.
+// Every tool declares `additionalProperties: false`, so a field added to a
+// result without a matching declaration makes DSH discard an otherwise
+// successful tool call. Exercised through `callTool` so the declared schema is
+// actually validated.
 await testCase('schema/every-tool-result-satisfies-its-schema', { scenario: 'success' }, async (ctl) => {
   const calls = [
     ['antigravity', { description: 'schema check', prompt: 'Reply with exactly: PONG' }],

@@ -76,6 +76,7 @@ import { dirname, isAbsolute, join, resolve } from 'node:path'
 import { filesTouched, mergeStepInto, parseStepUpdate, snapshotSteps, type StepEvent } from './agy-steps.js'
 import { homedir, tmpdir } from 'node:os'
 import { mkdirSync, readFileSync, renameSync, rmSync, statSync, writeFileSync } from 'node:fs'
+import { StringDecoder } from 'node:string_decoder'
 import { familyOfModel, spawnUsage, UsageReader } from './agy-usage.js'
 import { readTokenUsage, scanTokenRows } from './agy-usage-log.js'
 import { appendQuotaSnapshot, estimateQuota, readQuotaLog, type QuotaSnapshot } from './agy-quota-log.js'
@@ -89,10 +90,10 @@ import {
 } from './agy-models.js'
 import { registerAgyPanel } from './agy-panel.js'
 
-// ── DSH 0.2.1 compatibility shims (v1) ──────────────────────────────────────
+// ── DSH 0.2.1 compatibility shims ───────────────────────────────────────────
 // Upstream imported `resolveChildCwd` and `validateConfiguredCwd` from
-// @deepseek-ai/dsh-subagent. DSH 0.2.1-rc.2 exports neither, so the plugin died
-// with an ESM link error before its first line ran. Both are small,
+// @deepseek-ai/dsh-subagent. Some DSH builds export neither, so the plugin would
+// die with an ESM link error before its first line ran. Both are small,
 // self-contained path policies; these local copies reproduce the upstream
 // behaviour instead of dropping the checks. They are pure functions over the
 // same inputs, so they stay correct if a future DSH restores the originals.
@@ -118,7 +119,7 @@ export const name = '@dsh-external/dsh-subagent-antigravity'
 export const inject = ['subagents', 'subprocess', 'tools']
 
 /** Register the `antigravity` job kind with the generic jobs registry (id prefix: `antigravity-N`). */
-// v5 — `SubagentResult` is a sealed interface upstream (`output`, `structured?`,
+// `SubagentResult` is a sealed interface upstream (`output`, `structured?`,
 // `diagnostic?`, `stopReason`), so this plugin's added `transcript` field cannot
 // be returned as an object literal in a contextually-typed position. Declaring
 // the field by interface merging is the mechanism DSH uses itself for
@@ -220,6 +221,15 @@ export const Config = z.object({
   /** Ceiling for one headless run (`--print-timeout`); agy's own default is 5m. */
   printTimeoutMs: z.number().step(1).min(1000).max(3_600_000).default(5 * 60 * 1000),
   /**
+   * Auto-promote: how long a FOREGROUND call may block before it is turned into
+   * a background job. The model cannot know how long a task will take, so a
+   * call it expected to be quick can hold the whole session for minutes with
+   * nothing on screen. After this delay the running process is handed to
+   * `ctx.jobs` unchanged and the tool returns a job id instead, so the caller
+   * gets control back and is woken when the job settles. `0` disables it.
+   */
+  foregroundPromoteMs: z.number().step(1).min(0).max(3_600_000).default(60_000),
+  /**
    * Local watchdog margin on top of the active ceiling (foreground
    * `printTimeoutMs`, background `backgroundTimeoutMs`). If agy neither
    * finishes nor honors its own `--print-timeout` (network hang, auth
@@ -316,19 +326,19 @@ export const Config = z.object({
   /** Durable follow-up registry path; empty derives `~/.dsh/agy-conversations.json`. */
   registryPath: z.string().default(''),
   /**
-   * Persist each run's raw agy event stream as NDJSON (v2). The stream carries
-   * the agent's text, every tool call with its parameters, and the final
-   * result, so a transcript is the only way to see what a delegated task
-   * actually did. `transcriptDir` defaults to `~/.dsh/agy-transcripts`, one file
-   * per task key plus an `index.json`.
-   */
-  /**
-   * Where the probed agy flag support is cached. Omit it for the default
+   * Where probed flag support is cached. Unset derives the default
    * (`~/.dsh/agy-flag-cache.json`); pass `''` to disable the cache. It is keyed
    * by the executable's identity, so an agy self-update invalidates it on its
    * own; delete the file to force a re-probe.
    */
   flagCachePath: z.string(),
+  /**
+   * Persist each run's raw agy event stream as NDJSON. The stream carries
+   * the agent's text, every tool call with its parameters, and the final
+   * result, so a transcript is the only way to see what a delegated task
+   * actually did. `transcriptDir` defaults to `~/.dsh/agy-transcripts`, one file
+   * per task key plus an `index.json`.
+   */
   transcript: z.boolean().default(true),
   /** Transcript directory override; empty derives `~/.dsh/agy-transcripts`. */
   transcriptDir: z.string().default(''),
@@ -346,6 +356,8 @@ export interface Config {
   effort: string
   agent: string
   printTimeoutMs: number
+  /** Foreground calls still running after this are handed to ctx.jobs; 0 disables. */
+  foregroundPromoteMs: number
   watchdogMarginMs: number
   backgroundTimeoutMs: number
   skipPermissions: boolean
@@ -714,11 +726,11 @@ function parseJsonObject(text: string): AgyJsonReply | undefined {
  * then scan line by line so a preamble (progress/status line before the
  * JSON object) cannot hide the `conversation_id`.
  *
- * v3 — `stream-json` support. In stream-json mode agy emits NDJSON in which the
+ * `stream-json` support. In stream-json mode agy emits NDJSON in which the
  * terminal object is `{"event":"result","result":{status,response,...}}`. The
- * reply is nested one level deeper than the plain `json` mode, so the generic
- * scan below used to return the *first* object it saw (the `init` event, which
- * has no `status`/`response`) and the caller reported a successful run as
+ * reply is nested one level deeper than in plain `json` mode, so a generic
+ * scan returns the *first* object it sees (the `init` event, which has no
+ * `status`/`response`) and the caller would report an unfinished run as
  * `agy exited with code 0`. Look for the `result` event explicitly first.
  */
 function tryParseJsonOutput(stdout: string): AgyJsonReply | undefined {
@@ -764,7 +776,7 @@ function isUnknownFlagError(stderr: string): boolean {
 // final `response` alone hides which tools ran and with what arguments.
 
 /**
- * First transcript line: the prompt the caller asked (v4). The agy event stream
+ * First transcript line: the prompt the caller asked. The agy event stream
  * itself does not carry the prompt, so without this the transcript would start
  * mid-flight and the reader could not tell what agy was asked to do.
  * @param plan - the run plan.
@@ -810,6 +822,10 @@ function resolveTranscriptDir(config: Config): string {
  */
 function writeTranscript(config: Config, id: string, text: string): string | undefined {
   try {
+    // Keep the whole read→modify→write of index.json synchronous. Node cannot
+    // switch tasks inside a sync block, so two runs settling "at once" still
+    // serialize here; an `await` anywhere in this function would let the second
+    // writer overwrite the first one's index entry.
     const dir = resolveTranscriptDir(config)
     mkdirSync(dir, { recursive: true })
     // Run ids look like `<session>::agy::<seq>`; `:` is not portable in a
@@ -965,6 +981,11 @@ export interface SpawnOverrides {
 
 /** Hooks shape registered with `ctx.jobs` for a background agy run (mirrors dsh-tool-pwsh's background adaptation). */
 export interface AntigravityBackgroundHandle {
+  /**
+   * The run id — the same key `remember()`/`updateTaskRegistry()` uses, so a
+   * settled background run can be resumed by the `task` key the tool returns.
+   */
+  id: string
   /** Stop the run (job_kill). */
   cancel: (reason?: string) => void
   /** Settles with the generic task-outcome vocabulary. */
@@ -1024,6 +1045,20 @@ interface SpawnPlan {
   prompt: string
 }
 
+/**
+ * A foreground run that can still be handed over to `ctx.jobs` if it outlives
+ * the auto-promote delay. The process is already running, so the job only has
+ * to adopt its output cursor and its settlement — nothing is restarted.
+ */
+interface PromotableForegroundRun {
+  /** Incremental stdout delta since the previous read (destructive cursor). */
+  readOutput: () => string
+  /** Terminate the process tree (job_kill). */
+  terminate: () => void
+  /** This run's settlement, exactly as the foreground path would have returned it. */
+  result: Promise<SubagentResult>
+}
+
 class AntigravitySubagentProvider implements SubagentProvider {
   readonly capabilities = NO_START_CAPABILITIES
   readonly inheritsParentContext = false
@@ -1041,6 +1076,11 @@ class AntigravitySubagentProvider implements SubagentProvider {
   private runSeq = 0
   /** Live in-flight runs (foreground + background), for the tasks/cancel tools. */
   private readonly activeRuns = new Map<string, ActiveRunInfo>()
+  /**
+   * Foreground runs still young enough to be promoted to a background job.
+   * Entries remove themselves when the run settles, so this never accumulates.
+   */
+  private readonly promotable = new Map<string, PromotableForegroundRun>()
   /** Model catalogue behind `model: auto`; undefined until the cache or probe lands. */
   private modelCatalog: ModelCatalog | undefined
   /** Single-flight guard: startup, panel and the first run must share one probe. */
@@ -1285,8 +1325,8 @@ class AntigravitySubagentProvider implements SubagentProvider {
     if (process.platform === 'win32') {
       try {
         // PowerShell Start-Process opens the console app in its own window.
-        // Single-quoted path avoids the cmd `start` title/command quoting
-        // hell (which previously mangled the command into a bogus "loginy").
+        // The single-quoted path avoids the cmd `start` title/command quoting
+        // trap, where an unquoted path becomes the window title.
         const psPath = exe.replace(/'/g, "''")
         const style = config.loginWindowMinimized ? ' -WindowStyle Minimized' : ''
         ctx.subprocess.spawn({
@@ -1543,11 +1583,9 @@ class AntigravitySubagentProvider implements SubagentProvider {
     if (model.length > 0) baseArgv.push('--model', model)
     const effort = overrides?.effort?.trim() ?? config.effort
     if (effort.length > 0) {
-      // v5 — agy 1.4.6 accepts low | medium | high | xhigh | max. The old
-      // three-value whitelist rejected `xhigh`/`max` outright, which made two
-      // documented reasoning levels unusable. Warn on an unrecognized value but
-      // still pass it through: agy is the authority on its own flag, and a
-      // future build may add levels this plugin cannot know about.
+      // Unrecognized values are warned about but still passed through: agy is
+      // the authority on its own flag, and a future build may add levels this
+      // plugin cannot know about.
       if (!EFFORT_LEVELS.includes(effort)) {
         ctx.logger.warn(`${PREFIX}: effort "${effort}" is not one of ${EFFORT_LEVELS.join(' | ')}; passing it to agy anyway`)
       }
@@ -1711,7 +1749,7 @@ class AntigravitySubagentProvider implements SubagentProvider {
     let timedOut = false
     let watchdog: NodeJS.Timeout | undefined
     let current: { handle: SubprocessHandle } | undefined
-    // v5 — declared here, not at the write site. The aborted and timed-out
+    // Declared here, not at the write site. The aborted and timed-out
     // branches below reference it, and those branches can run *before* the
     // process produces any stdout; a `const` declared next to the write would
     // throw `Cannot access 'transcriptPath' before initialization` and turn a
@@ -1740,11 +1778,10 @@ class AntigravitySubagentProvider implements SubagentProvider {
 
     const spawnOnce = (jsonModeArg: boolean) => {
       const argv = [...plan.baseArgv]
-      // v5 — `stream-json` when the probe confirmed it, `json` otherwise. The
-      // foreground path used to hard-code `json`, which returns only the final
-      // response and hides every intermediate step; stream-json is what makes a
-      // complete transcript possible. The strict `=== true` keeps an unprobed
-      // build on the format upstream has always used.
+      // `stream-json` when the probe confirmed it, `json` otherwise. Plain
+      // `json` returns only the final response and hides every intermediate
+      // step; stream-json is what makes a complete transcript possible. The
+      // strict `=== true` keeps an unprobed build on the plain `json` reply.
       if (jsonModeArg) argv.push('--output-format', resolveStreamMode(plan.support))
       if (conversationId !== undefined) argv.push('--conversation', conversationId)
       const handle = ctx.subprocess.spawn({
@@ -1817,7 +1854,7 @@ class AntigravitySubagentProvider implements SubagentProvider {
           }
         }
 
-        // v2/v4 — persist the raw stream before parsing it, so a parse failure
+        // Persist the raw stream before parsing it, so a parse failure
         // still leaves the evidence on disk. The header carries the prompt,
         // which the agy event stream itself never includes.
         transcriptPath = config.transcript === false ? undefined : writeTranscript(config, plan.id, transcriptHeader(plan) + stdout)
@@ -1914,6 +1951,28 @@ class AntigravitySubagentProvider implements SubagentProvider {
       }
       return transcriptPath === undefined ? value : { ...value, transcript: transcriptPath }
     })
+    // Publish the promote hook: while this run is still going, the tool layer
+    // may hand it to ctx.jobs instead of holding the whole session on a call
+    // the model thought would be quick. The cursor is local to this run and the
+    // entry removes itself the moment the run settles.
+    let promoteOffset = 0
+    this.promotable.set(plan.id, {
+      readOutput: () => {
+        const text = readStdout(current?.handle ?? {})
+        const delta = text.slice(promoteOffset)
+        promoteOffset = text.length
+        return delta
+      },
+      terminate: () => {
+        cancelled = true
+        ensureTerminated()
+      },
+      result,
+    })
+    void result.then(
+      () => this.promotable.delete(plan.id),
+      () => this.promotable.delete(plan.id),
+    )
     // Track for the tasks/cancel tools; released when the result settles.
     this.trackActive(
       plan.id,
@@ -1955,6 +2014,44 @@ class AntigravitySubagentProvider implements SubagentProvider {
   }
 
   /**
+   * Hand a still-running foreground run to `ctx.jobs`.
+   *
+   * Nothing is restarted: the process keeps running, and the job adopts its
+   * output cursor plus its settlement. The run is disposed when that settlement
+   * lands, which is what the foreground path would have done anyway.
+   *
+   * @returns the job id, or undefined when the run already settled (or was
+   *   never promotable) — the caller then stays on the normal foreground path.
+   */
+  promoteForeground(
+    run: SubagentRun,
+    jobs: { start: (spec: Record<string, unknown>) => string },
+    label: string,
+    owner: string,
+  ): string | undefined {
+    const pending = this.promotable.get(run.id)
+    if (pending === undefined) return undefined
+    this.promotable.delete(run.id)
+    return jobs.start({
+      kind: 'antigravity',
+      label,
+      owner,
+      run: () => ({
+        cancel: () => pending.terminate(),
+        done: pending.result.then(async (value: SubagentResult) => {
+          await run.dispose()
+          return {
+            status:
+              value.stopReason === 'aborted' ? 'killed' : value.stopReason === 'error' ? 'failed' : 'completed',
+            detail: outputValueText(value.output ?? []),
+          }
+        }),
+        readOutput: pending.readOutput,
+      }),
+    })
+  }
+
+  /**
    * Background run for `ctx.jobs` registration: spawns agy immediately with
    * `--output-format stream-json` (falling back to json, then text), streams
    * the incremental `text_delta` chunks through `readOutput`, captures the
@@ -1967,7 +2064,12 @@ class AntigravitySubagentProvider implements SubagentProvider {
       request as ResolvedSubagentStartRequest,
       undefined,
       undefined,
-      extraDirs,
+      // config.addDirs is the configured workspace extension; extraDirs are the
+      // per-call ones. The foreground and resume paths already merge both, and
+      // validateAddDirs de-duplicates, so a background run must not silently
+      // drop the configured dirs (a headless agy cannot answer the interactive
+      // "add directory to workspace?" prompt and would hang until its timeout).
+      [...this.config.addDirs, ...extraDirs],
       config.backgroundTimeoutMs,
       overrides,
     )
@@ -1995,7 +2097,8 @@ class AntigravitySubagentProvider implements SubagentProvider {
       signal: abort.signal,
     } as ResolvedSubagentStartRequest
     // The signal is only borrowed by spawnPlan's executable probe.
-    const plan = await this.spawnPlan(request, input.conversationId, input.cwd, [], config.backgroundTimeoutMs)
+    // The panel has no per-call dirs, but the configured ones still apply.
+    const plan = await this.spawnPlan(request, input.conversationId, input.cwd, [...config.addDirs], config.backgroundTimeoutMs)
       .finally(() => abort.abort())
     // spawnPlan validates --conversation support but only the foreground path
     // appends the flag itself; the background argv is plan.baseArgv verbatim.
@@ -2065,8 +2168,27 @@ class AntigravitySubagentProvider implements SubagentProvider {
       clearTimeout(watchdog)
     }
 
+    /**
+     * Raw NDJSON of this run, for the transcript. The foreground path writes its
+     * captured stdout verbatim; the background path streams, so it accumulates
+     * here instead. Capped so a one-hour run cannot grow the heap without bound.
+     */
+    const rawLines: string[] = []
+    let rawBytes = 0
+    let rawTruncated = false
+    const MAX_TRANSCRIPT_BYTES = 16 << 20
+
     /** Consume one NDJSON line of the stream-json protocol (or a bare json reply in fallback mode). */
     const consumeLine = (line: string): void => {
+      // Collected here, at the single entry point, so both the streaming `data`
+      // slices and the trailing `end` fragment reach the transcript.
+      if (rawBytes < MAX_TRANSCRIPT_BYTES) {
+        rawLines.push(line)
+        rawBytes += line.length + 1
+      } else if (!rawTruncated) {
+        rawTruncated = true
+        rawLines.push('# [transcript truncated: exceeded 16MB ceiling]')
+      }
       let obj: unknown
       try {
         obj = JSON.parse(line)
@@ -2165,8 +2287,13 @@ class AntigravitySubagentProvider implements SubagentProvider {
       })
       armWatchdog()
       let buffer = ''
+      // A chunk boundary can fall inside a multi-byte character, and a bare
+      // `chunk.toString('utf8')` would turn that character into U+FFFD — the
+      // corruption then reaches both the live output and the transcript. The
+      // decoder holds the partial bytes until the next chunk completes them.
+      const decoder = new StringDecoder('utf8')
       handle.stdout?.on('data', (chunk: Buffer) => {
-        buffer += chunk.toString('utf8')
+        buffer += decoder.write(chunk)
         let idx: number
         while ((idx = buffer.indexOf('\n')) >= 0) {
           const line = buffer.slice(0, idx).trim()
@@ -2175,6 +2302,8 @@ class AntigravitySubagentProvider implements SubagentProvider {
         }
       })
       handle.stdout?.on('end', () => {
+        // Flush whatever the decoder is still holding, then the trailing line.
+        buffer += decoder.end()
         const tail = buffer.trim()
         if (tail.length > 0) consumeLine(tail)
       })
@@ -2217,7 +2346,13 @@ class AntigravitySubagentProvider implements SubagentProvider {
             summaryText = [...notes, summary ?? ''].filter((part) => part.length > 0).join('\n\n')
           }
         } else {
-          status = 'completed'
+          // Reached only when the run ended without a SUCCESS result: a non-zero
+          // exit, an auth failure, or a stream that never produced a parseable
+          // result. The branch above already handles "SUCCESS but nothing said".
+          // Marking this `completed` reported a failed run as a success to the
+          // panel (which only sets `run.error` when status !== 'completed') and
+          // to the jobs runtime.
+          status = 'failed'
           detail = this.maybeAutoLogin(
             (finalError !== undefined && finalError.length > 0 ? finalError : stderr.trim()) || `agy exited with code ${String(outcome.exitCode)}`,
           )
@@ -2230,6 +2365,12 @@ class AntigravitySubagentProvider implements SubagentProvider {
       } finally {
         disarmWatchdog()
         plan.releasePromptFile()
+      }
+      // `transcript: true` promises that every run leaves an NDJSON record. The
+      // foreground path does this in runOnce; without this the background path —
+      // the one used for long jobs — left no evidence at all.
+      if (config.transcript !== false && rawLines.length > 0) {
+        writeTranscript(config, plan.id, transcriptHeader(plan) + rawLines.join('\n'))
       }
       this.remember(id, conversationId, plan.childCwd, label, plan.model)
       if (conversationId !== undefined && this.runRecords.has(id)) {
@@ -2271,7 +2412,7 @@ class AntigravitySubagentProvider implements SubagentProvider {
 
     // Track for the tasks/cancel tools; released when the job settles.
     this.trackActive(id, { label, cwd: plan.childCwd, startedAt: Date.now(), background: true, cancel }, done)
-    return { cancel, done, readOutput, tool: () => lastTool, steps: () => snapshotSteps(steps) }
+    return { id, cancel, done, readOutput, tool: () => lastTool, steps: () => snapshotSteps(steps) }
   }
 }
 
@@ -2287,6 +2428,18 @@ function outputValueText(values: unknown[]): string {
     )
     .map((value) => (value as { text: string }).text)
     .join('')
+}
+
+/**
+ * Tool descriptions tell the model it may pass either the bare task key or the
+ * `[task: <key>]` line a previous result carried. Accept both, and tolerate the
+ * backticks/quotes a model sometimes wraps around it.
+ */
+function parseTaskKey(raw: string): string {
+  const cleaned = raw.trim().replace(/^[`'"]+|[`'"]+$/g, '').trim()
+  const match = /^\[?\s*task\s*:\s*([^\]]+?)\s*\]?\.?$/i.exec(cleaned)
+  const key = match?.[1]?.trim() ?? cleaned
+  return key.replace(/^[`'"]+|[`'"]+$/g, '').trim()
 }
 
 /** Render a millisecond duration compactly for model-facing text ("1 h", "5 min", "60 s"). */
@@ -2352,8 +2505,9 @@ function describeDenials(value: unknown): string[] {
 /**
  * Why a `SUCCESS` reply with no text is not a success.
  *
- * agy reports SUCCESS even when headless mode denied the only action it needed,
- * which used to surface as an empty answer the caller could not act on.
+ * agy reports SUCCESS even when headless mode denied the only action it needed.
+ * Reporting that as success hands the caller an empty answer it cannot act on,
+ * so both cases are settled as failures that name what to change.
  */
 function explainEmptyResult(input: { denied: readonly string[]; stderr?: string; transcript?: string }): string {
   const raw = input.transcript === undefined ? '' : ` Raw stream: ${input.transcript}.`
@@ -2453,6 +2607,56 @@ async function settleForegroundRun(
   }
   if (disposal.status === 'rejected') throw disposal.reason
   return execution.value
+}
+
+/**
+ * Await a foreground run, but stop holding the session once
+ * `config.foregroundPromoteMs` has elapsed.
+ *
+ * The model has no way to know how long a task will take, so a call it expected
+ * to be quick can block the whole turn for minutes with nothing on screen.
+ * Past the delay the still-running process is registered as a job instead: the
+ * caller gets a job id back immediately and is woken when it settles. Short
+ * runs never reach the delay and behave exactly as before.
+ */
+async function foregroundOrPromote(
+  ctx: Context,
+  config: Config,
+  run: SubagentRun,
+  label: string,
+  owner: string,
+): Promise<
+  | { kind: 'foreground'; runId: string; output: JsonValue[] }
+  | { kind: 'background'; jobId: string; task: string; note: string }
+> {
+  const promoteMs = config.foregroundPromoteMs
+  const jobs = ctx.get('jobs') as { start: (spec: Record<string, unknown>) => string } | undefined
+  if (promoteMs > 0 && jobs !== undefined) {
+    const winner = await Promise.race([
+      run.result.then(() => 'settled' as const),
+      new Promise<null>((resolve) => {
+        const timer = setTimeout(() => resolve(null), promoteMs)
+        // Never keep the process alive just for this timer.
+        if (typeof timer.unref === 'function') timer.unref()
+      }),
+    ])
+    if (winner === null) {
+      const provider = ctx.subagents.getProvider(config.providerName) as AntigravitySubagentProvider | undefined
+      const jobId =
+        provider instanceof AntigravitySubagentProvider
+          ? provider.promoteForeground(run, jobs, label, owner)
+          : undefined
+      if (jobId !== undefined) {
+        return {
+          kind: 'background',
+          jobId,
+          task: run.id,
+          note: `This call ran longer than ${Math.round(promoteMs / 1000)}s, so it was moved to the background instead of blocking the session. Read it with job_output (wait: true only if you are blocked), stop it with job_kill, or resume the conversation later with the task key.`,
+        }
+      }
+    }
+  }
+  return settleForegroundRun(run)
 }
 
 export function apply(ctx: Context, config: Config): void {
@@ -2590,7 +2794,7 @@ export function apply(ctx: Context, config: Config): void {
             background: {
               type: 'boolean',
               description:
-                'Optional. Set true to run in the background: the call returns a job id immediately; you are notified when it settles; read live output with job_output and stop with job_kill. The final output includes a [task: ...] line for antigravity_followup. Background runs use the generous ' + formatMs(config.backgroundTimeoutMs) + ' ceiling (backgroundTimeoutMs) instead of the ' + formatMs(config.printTimeoutMs) + ' foreground ceiling. IMPORTANT — do NOT busy-poll. This job wakes you in-session (a completion notice is injected, or opens a new turn on an idle agent) as soon as it settles, so after starting it go do independent work and read the result when you are notified. Use job_output with wait: true only when you are genuinely blocked; a single wait on a short job (under ~2 minutes) is fine. Each poll costs tokens, so keep reads and progress updates brief, and do not duplicate the running job\'s work.',
+                'Optional. Set true to run in the background: the call returns a job id immediately; you are notified when it settles; read live output with job_output and stop with job_kill. CHOOSE IT for anything that edits files, runs commands/builds/tests, or is likely to take more than a minute — those are the calls that would otherwise hold this session for minutes with nothing on screen. A foreground call still running after ' + formatMs(config.foregroundPromoteMs) + ' (foregroundPromoteMs) is moved to a background job automatically, so picking it explicitly just skips that wait. The final output includes a [task: ...] line for antigravity_followup. Background runs use the generous ' + formatMs(config.backgroundTimeoutMs) + ' ceiling (backgroundTimeoutMs) instead of the ' + formatMs(config.printTimeoutMs) + ' foreground ceiling. IMPORTANT — do NOT busy-poll. This job wakes you in-session (a completion notice is injected, or opens a new turn on an idle agent) as soon as it settles, so after starting it go do independent work and read the result when you are notified. Use job_output with wait: true only when you are genuinely blocked; a single wait on a short job (under ~2 minutes) is fine. Each poll costs tokens, so keep reads and progress updates brief, and do not duplicate the running job\'s work.',
             },
           },
           output: {
@@ -2607,11 +2811,14 @@ export function apply(ctx: Context, config: Config): void {
                 conversationId: { type: 'string' },
                 label: { type: 'string' },
                 output: { type: 'array', items: { type: 'json' } },
+                // Set when the call outlived foregroundPromoteMs and was moved
+                // to the background; without it the caller sees a bare job id.
+                note: { type: 'string' },
               },
             },
-            render: (_args: unknown, value: { kind?: string; jobId?: string; output?: unknown[] }) => {
+            render: (_args: unknown, value: { kind?: string; jobId?: string; output?: unknown[]; note?: string }) => {
               if (value.kind === 'background') {
-                return [{ type: 'text', text: `started background job ${value.jobId ?? '(unknown)'} — you will be notified when it settles; read output with job_output, stop with job_kill` }]
+                return [{ type: 'text', text: value.note ?? `started background job ${value.jobId ?? '(unknown)'} — you will be notified when it settles; read output with job_output, stop with job_kill` }]
               }
               return [{ type: 'text', text: outputValueText(value.output ?? []) }]
             },
@@ -2631,7 +2838,7 @@ export function apply(ctx: Context, config: Config): void {
             // Resume path: `task` turns this call into a follow-up, with the
             // same background support and per-call model overrides.
             if (args.task !== undefined && args.task.trim().length > 0) {
-              const task = args.task.trim()
+              const task = parseTaskKey(args.task)
               const record = loadTaskRegistry(config)[task]
               if (record === undefined) {
                 throw new Error(
@@ -2655,14 +2862,21 @@ export function apply(ctx: Context, config: Config): void {
                 const bg = await provider.startResumeBackground(request, record.conversationId, record.cwd, args.dirs ?? [], overrides)
                 let jobId: string
                 try {
-                  jobId = jobs.start({ kind: 'antigravity', label, owner: parent.session.id, run: () => bg })
+                  jobId = jobs.start({ kind: 'antigravity', label, owner: parent.session.id as unknown as Agent, run: () => bg })
                 } catch (error) {
                   bg.cancel()
                   throw error
                 }
                 return { kind: 'background', jobId, task }
               }
-              const settled = await settleForegroundRun(await provider.followup(request, record.conversationId, record.cwd, overrides))
+              const settled = await foregroundOrPromote(
+                ctx,
+                config,
+                await provider.followup(request, record.conversationId, record.cwd, overrides),
+                label,
+                parent.session.id,
+              )
+              if (settled.kind === 'background') return settled
               const refreshed = provider.recordOf(settled.runId)
               await updateTaskRegistry(config, (records) => {
                 records[task] = {
@@ -2710,16 +2924,23 @@ export function apply(ctx: Context, config: Config): void {
                   // `session "[object Object]" has no live agent` when handed an
                   // Agent. That throw also made every `background: true` call
                   // fail, which is why callers stopped using the tool.
-                  owner: parent.session.id,
+                  // The published d.ts types `owner` as `Agent` while the runtime
+                  // resolves it as a session id — the declaration lags the
+                  // implementation, so the cast carries the runtime contract.
+                  owner: parent.session.id as unknown as Agent,
                   run: () => bg,
                 })
               } catch (error) {
                 bg.cancel()
                 throw error
               }
-              return { kind: 'background', jobId }
+              // `task` is the key a follow-up needs; the run id is already known
+              // here, and the registry entry lands when the run settles.
+              return { kind: 'background', jobId, task: bg.id }
             }
-            const settled = await settleForegroundRun(
+            const settled = await foregroundOrPromote(
+              ctx,
+              config,
               await provider.startWithDirs(
                 {
                   label,
@@ -2730,14 +2951,17 @@ export function apply(ctx: Context, config: Config): void {
                 args.dirs ?? [],
                 overrides,
               ),
+              label,
+              parent.session.id,
             )
+            if (settled.kind === 'background') return settled
             const record = provider.recordOf(settled.runId)
             if (record !== undefined) {
               await updateTaskRegistry(config, (records) => {
                 records[settled.runId] = record
               }, ctx.logger)
             }
-            // v5 — surface the agy conversation id (and label) alongside the
+            // Surface the agy conversation id (and label) alongside the
             // task key. The DSH output schema is strict: an undeclared field is
             // dropped and the caller then cannot correlate a task with the agy
             // conversation it maps to, so the field must be both returned and
@@ -2784,16 +3008,25 @@ export function apply(ctx: Context, config: Config): void {
               type: 'object',
               additionalProperties: false,
               properties: {
-                kind: { type: 'string', required: true, const: 'foreground' },
-                runId: { type: 'string', required: true },
+                // Not pinned to 'foreground': a long follow-up can be promoted
+                // to a background job, so both shapes must validate.
+                kind: { type: 'string', required: true },
+                runId: { type: 'string' },
                 task: { type: 'string', required: true },
+                jobId: { type: 'string' },
+                note: { type: 'string' },
                 // Declared for the same reason as the antigravity tool: the
                 // schema strips undeclared fields.
                 conversationId: { type: 'string' },
-                output: { type: 'array', required: true, items: { type: 'json' } },
+                output: { type: 'array', items: { type: 'json' } },
               },
             },
-            render: (_args: unknown, value: { output: unknown[] }) => [{ type: 'text', text: outputValueText(value.output) }],
+            render: (_args: unknown, value: { kind?: string; jobId?: string; output?: unknown[]; note?: string }) => {
+              if (value.kind === 'background') {
+                return [{ type: 'text', text: value.note ?? `moved to background job ${value.jobId ?? '(unknown)'} — read it with job_output` }]
+              }
+              return [{ type: 'text', text: outputValueText(value.output ?? []) }]
+            },
           },
           isConcurrencySafe: () => true,
           async execute(args: { description: string; task: string; prompt: string }, exec: ToolRunContext) {
@@ -2804,13 +3037,16 @@ export function apply(ctx: Context, config: Config): void {
               throw new Error(`${PREFIX}: provider "${config.providerName}" is not the antigravity provider`)
             }
             const records = loadTaskRegistry(config)
-            const record = records[args.task]
+            const task = parseTaskKey(args.task)
+            const record = records[task]
             if (record === undefined) {
               throw new Error(
-                `${PREFIX}: no such task "${args.task}" — run the antigravity tool first (task keys survive DSH restarts via ~/.dsh/agy-conversations.json)`,
+                `${PREFIX}: no such task "${task}" — run the antigravity tool first (task keys survive DSH restarts via ~/.dsh/agy-conversations.json)`,
               )
             }
-            const settled = await settleForegroundRun(
+            const settled = await foregroundOrPromote(
+              ctx,
+              config,
               await provider.followup(
                 {
                   label: args.description,
@@ -2821,14 +3057,17 @@ export function apply(ctx: Context, config: Config): void {
                 record.conversationId,
                 record.cwd,
               ),
+              args.description,
+              parent.session.id,
             )
+            if (settled.kind === 'background') return settled
             const refreshed = provider.recordOf(settled.runId)
             await updateTaskRegistry(config, (records) => {
-              records[args.task] = { ...record, createdAt: Date.now(), ...(refreshed !== undefined ? { conversationId: refreshed.conversationId } : {}) }
+              records[task] = { ...record, createdAt: Date.now(), ...(refreshed !== undefined ? { conversationId: refreshed.conversationId } : {}) }
             }, ctx.logger)
             return {
               ...settled,
-              task: args.task,
+              task,
               ...(refreshed?.conversationId !== undefined
                 ? { conversationId: refreshed.conversationId }
                 : record.conversationId !== undefined
@@ -3013,16 +3252,22 @@ export function apply(ctx: Context, config: Config): void {
             if (!(current instanceof AntigravitySubagentProvider)) {
               throw new Error(`${PREFIX}: provider "${config.providerName}" is not the antigravity provider`)
             }
-            const cancelled = current.cancelActive(args.task)
+            const task = parseTaskKey(args.task)
+            const cancelled = current.cancelActive(task)
             if (!cancelled) {
-              throw new Error(
-                `${PREFIX}: no running task "${args.task}" — running tasks are listed by ${config.tasksToolName}; finished tasks cannot be cancelled (their conversations resume via ${config.followupToolName})`,
-              )
+              // Not an error: the key may name a task that already finished (the
+              // tasks tool lists recent ones too), and the documented contract is
+              // to answer `cancelled: false` rather than throw.
+              return {
+                cancelled: false,
+                task,
+                message: `No running task "${task}". Finished tasks cannot be cancelled — resume one with ${config.followupToolName}; running tasks are listed by ${config.tasksToolName}.`,
+              }
             }
             return {
               cancelled: true,
-              task: args.task,
-              message: `Cancellation requested for task ${args.task} — its run settles as cancelled.`,
+              task,
+              message: `Cancellation requested for task ${task} — its run settles as cancelled.`,
             }
           },
         }),

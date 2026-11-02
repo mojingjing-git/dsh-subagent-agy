@@ -86,6 +86,8 @@ export interface Config {
     effort: string;
     agent: string;
     printTimeoutMs: number;
+    /** Foreground calls still running after this are handed to ctx.jobs; 0 disables. */
+    foregroundPromoteMs: number;
     watchdogMarginMs: number;
     backgroundTimeoutMs: number;
     skipPermissions: boolean;
@@ -167,6 +169,11 @@ export interface SpawnOverrides {
 }
 /** Hooks shape registered with `ctx.jobs` for a background agy run (mirrors dsh-tool-pwsh's background adaptation). */
 export interface AntigravityBackgroundHandle {
+    /**
+     * The run id — the same key `remember()`/`updateTaskRegistry()` uses, so a
+     * settled background run can be resumed by the `task` key the tool returns.
+     */
+    id: string;
     /** Stop the run (job_kill). */
     cancel: (reason?: string) => void;
     /** Settles with the generic task-outcome vocabulary. */

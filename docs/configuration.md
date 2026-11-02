@@ -67,6 +67,7 @@ Per-call `model` / `effort` arguments override these values for a single run.
 | Key | Default | Meaning |
 |---|---|---|
 | `printTimeoutMs` | 5 min | Foreground ceiling (`--print-timeout`) |
+| `foregroundPromoteMs` | 1 min | Hand a still-running foreground call to the jobs runtime; `0` disables |
 | `backgroundTimeoutMs` | 1 h | Background ceiling |
 | `watchdogMarginMs` | 1 min | Local margin on top of whichever ceiling applies |
 | `disposeGraceMs` | 5 s | SIGTERM→SIGKILL escalation grace |
@@ -76,9 +77,24 @@ local watchdog that terminates the process tree at *ceiling + margin*. The
 watchdog covers the case where agy stalls in a way its own timer does not
 interrupt.
 
-**Long tasks belong in the background.** The jobs runtime wakes the owning agent
-when it settles, so there is no polling cost and `job_kill` can stop it at any
-time — hence the much larger default ceiling there.
+### Auto-promote (foreground → background)
+
+A foreground call blocks the turn until agy answers, and the model has no way to
+know in advance how long a task will take — so a call it expected to be quick
+can hold the session for minutes with nothing on screen.
+
+`foregroundPromoteMs` (default 1 min) bounds that wait. Past the delay the
+**still-running process is handed to `ctx.jobs` unchanged** — nothing is
+restarted — and the tool returns a job id plus a `note` explaining the move. The
+caller gets control back immediately and is woken when the job settles, exactly
+like an explicit `background: true` call.
+
+Short runs never reach the delay and behave exactly as before. Set it to `0` to
+disable the promotion entirely.
+
+**Long tasks still belong in the background.** The jobs runtime wakes the owning
+agent when it settles, so there is no polling cost and `job_kill` can stop it at
+any time — hence the much larger default ceiling there.
 
 ## Permissions and guard rails
 

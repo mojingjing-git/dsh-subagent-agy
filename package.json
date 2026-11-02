@@ -1,6 +1,6 @@
 {
   "name": "@dsh-external/dsh-subagent-antigravity",
-  "version": "0.2.0-patched.19",
+  "version": "0.2.0-patched.22",
   "description": "Delegate tasks to Google Antigravity CLI (agy) as a DSH subagent — no Gemini API key needed, uses your Antigravity login",
   "type": "module",
   "main": "./lib/index.js",
@@ -16,10 +16,11 @@
   },
   "files": [
     "lib",
+    "docs",
     "cordis.patch.yml",
-    "PATCH.md",
     "README.md",
     "README.zh.md",
+    "README.i18n.yaml",
     "LICENSE"
   ],
   "license": "MIT",
