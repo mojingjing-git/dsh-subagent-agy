@@ -41,13 +41,17 @@ dsh plugin --profile web add github:mojingjing-git/dsh-subagent-agy
 ```
 
 **From a tarball**: download a
-`dsh-external-dsh-subagent-antigravity-<version>.tgz` from the
+`mojingjing-git-dsh-subagent-antigravity-<version>.tgz` from the
 [releases page](https://github.com/mojingjing-git/dsh-subagent-agy/releases), then:
 
 ```bash
-dsh plugin --profile web add /path/to/dsh-external-dsh-subagent-antigravity-<version>.tgz
+dsh plugin --profile web add /path/to/mojingjing-git-dsh-subagent-antigravity-<version>.tgz
 ```
 
+**From a plugin market index**: this repository publishes a
+[format-1 index](https://mojingjing-git.github.io/dsh-subagent-agy/market/index.json).
+Add that URL under Settings → Plugins → Discover. The entry installs from a
+pinned commit, so no npm account and no build step are involved.
 Substitute the version you downloaded — see
 [`package.json`](package.json) for the current one.
 

@@ -39,13 +39,18 @@ dsh plugin --profile web add github:mojingjing-git/dsh-subagent-agy
 
 **从安装包安装**：到
 [Releases 页面](https://github.com/mojingjing-git/dsh-subagent-agy/releases) 下载
-`dsh-external-dsh-subagent-antigravity-<version>.tgz`，然后：
+`mojingjing-git-dsh-subagent-antigravity-<version>.tgz`，然后：
 
 ```bash
-dsh plugin --profile web add /path/to/dsh-external-dsh-subagent-antigravity-<version>.tgz
+dsh plugin --profile web add /path/to/mojingjing-git-dsh-subagent-antigravity-<version>.tgz
 ```
 
 把 `<version>` 换成你下载的版本——当前版本号见 [`package.json`](package.json)。
+
+**从插件市场索引安装**：本仓库发布了一个
+[format 1 索引](https://mojingjing-git.github.io/dsh-subagent-agy/market/index.json)。
+在 设置 → 插件 → Discover 里添加该 URL 即可。条目按固定 commit 安装，不需要
+npm 账号，也不需要在本机构建。
 
 工具装完即用（任何会话里的模型都能调用 `antigravity` 系列）。**侧边栏面板是
 web client 扩展，需要重启一次 DSH 才会出现**；升级安装包后同样要重启，
